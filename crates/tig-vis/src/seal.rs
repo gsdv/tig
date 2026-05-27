@@ -5,15 +5,15 @@
 //! 1. Generate an ephemeral X25519 keypair `(eph_sk, eph_pk)`.
 //! 2. Generate a fresh 32-byte symmetric `data_key`.
 //! 3. For each recipient public key `R`:
-//!      a. `shared = X25519(eph_sk, R)`
-//!      b. `wrap_key = HKDF-SHA256(shared, info="tig-seal:wrap:v1")`
-//!      c. `wrap_nonce = random 24 bytes`
-//!      d. `wrap_aad = aad || R`  ← binds each wrap to (path, recipient)
-//!      e. `wrapped = XChaCha20Poly1305(wrap_key, wrap_nonce).encrypt(data_key, wrap_aad)`
-//!      f. Record `RecipientWrap { R, wrapped, wrap_nonce }`
+//!    a. `shared = X25519(eph_sk, R)`
+//!    b. `wrap_key = HKDF-SHA256(shared, info="tig-seal:wrap:v1")`
+//!    c. `wrap_nonce = random 24 bytes`
+//!    d. `wrap_aad = aad || R`  ← binds each wrap to (path, recipient)
+//!    e. `wrapped = XChaCha20Poly1305(wrap_key, wrap_nonce).encrypt(data_key, wrap_aad)`
+//!    f. Record `RecipientWrap { R, wrapped, wrap_nonce }`
 //! 4. Encrypt the payload:
-//!      `nonce = random 24 bytes`
-//!      `ciphertext = XChaCha20Poly1305(data_key, nonce).encrypt(plaintext, aad)`
+//!    `nonce = random 24 bytes`
+//!    `ciphertext = XChaCha20Poly1305(data_key, nonce).encrypt(plaintext, aad)`
 //!
 //! On decrypt the recipient:
 //! 1. Finds its wrap entry by matching pubkey.
@@ -83,7 +83,10 @@ pub fn seal(plaintext: &[u8], recipients: &[PublicKey], aad: &[u8]) -> Result<Se
         let wrapped = cipher
             .encrypt(
                 nonce,
-                Payload { msg: &data_key, aad: &wrap_aad },
+                Payload {
+                    msg: &data_key,
+                    aad: &wrap_aad,
+                },
             )
             .map_err(|e| Error::Crypto(format!("wrap encryption: {e}")))?;
 
@@ -100,7 +103,13 @@ pub fn seal(plaintext: &[u8], recipients: &[PublicKey], aad: &[u8]) -> Result<Se
     OsRng.fill_bytes(&mut payload_nonce_bytes);
     let payload_nonce = XNonce::from_slice(&payload_nonce_bytes);
     let ciphertext = payload_cipher
-        .encrypt(payload_nonce, Payload { msg: plaintext, aad })
+        .encrypt(
+            payload_nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|e| Error::Crypto(format!("payload encryption: {e}")))?;
 
     Ok(Sealed {
@@ -161,7 +170,10 @@ pub fn unseal(sealed: &Sealed, my_secret: &SecretKey, aad: &[u8]) -> Result<Vec<
     let data_key = wrap_cipher
         .decrypt(
             wrap_nonce,
-            Payload { msg: &wrap.wrapped_key, aad: &wrap_aad },
+            Payload {
+                msg: &wrap.wrapped_key,
+                aad: &wrap_aad,
+            },
         )
         .map_err(|_| Error::AuthFailure)?;
 
@@ -178,7 +190,10 @@ pub fn unseal(sealed: &Sealed, my_secret: &SecretKey, aad: &[u8]) -> Result<Vec<
     let plaintext = payload_cipher
         .decrypt(
             payload_nonce,
-            Payload { msg: &sealed.ciphertext, aad },
+            Payload {
+                msg: &sealed.ciphertext,
+                aad,
+            },
         )
         .map_err(|_| Error::AuthFailure)?;
 
@@ -205,7 +220,7 @@ mod tests {
         let plaintext = b"DATABASE_URL=postgres://host/db";
         let aad = b"config/prod.env";
 
-        let sealed = seal(plaintext, &[alice.public.clone()], aad).unwrap();
+        let sealed = seal(plaintext, std::slice::from_ref(&alice.public), aad).unwrap();
         let back = unseal(&sealed, &alice.secret, aad).unwrap();
         assert_eq!(back, plaintext);
     }
@@ -217,12 +232,7 @@ mod tests {
         let plaintext = b"SHARED_SECRET";
         let aad = b"path";
 
-        let sealed = seal(
-            plaintext,
-            &[alice.public.clone(), bob.public.clone()],
-            aad,
-        )
-        .unwrap();
+        let sealed = seal(plaintext, &[alice.public.clone(), bob.public.clone()], aad).unwrap();
 
         assert_eq!(unseal(&sealed, &alice.secret, aad).unwrap(), plaintext);
         assert_eq!(unseal(&sealed, &bob.secret, aad).unwrap(), plaintext);
@@ -243,7 +253,7 @@ mod tests {
     #[test]
     fn wrong_aad_fails() {
         let alice = KeyPair::generate();
-        let sealed = seal(b"x", &[alice.public.clone()], b"correct/path").unwrap();
+        let sealed = seal(b"x", std::slice::from_ref(&alice.public), b"correct/path").unwrap();
         match unseal(&sealed, &alice.secret, b"wrong/path") {
             Err(Error::AuthFailure) => {}
             other => panic!("expected AuthFailure, got {other:?}"),
@@ -253,7 +263,7 @@ mod tests {
     #[test]
     fn tampered_ciphertext_fails() {
         let alice = KeyPair::generate();
-        let mut sealed = seal(b"hello", &[alice.public.clone()], b"p").unwrap();
+        let mut sealed = seal(b"hello", std::slice::from_ref(&alice.public), b"p").unwrap();
         let last = sealed.ciphertext.last_mut().unwrap();
         *last ^= 0xff;
         match unseal(&sealed, &alice.secret, b"p") {
@@ -269,12 +279,7 @@ mod tests {
         // wrap_aad includes the recipient pubkey.
         let alice = KeyPair::generate();
         let bob = KeyPair::generate();
-        let mut sealed = seal(
-            b"x",
-            &[alice.public.clone(), bob.public.clone()],
-            b"p",
-        )
-        .unwrap();
+        let mut sealed = seal(b"x", &[alice.public.clone(), bob.public.clone()], b"p").unwrap();
         // Re-label bob's wrap as alice's: keep alice's wrap entry intact
         // but copy bob's wrapped_key+wrap_nonce on top of alice's pubkey.
         let bob_wrap = sealed
@@ -301,7 +306,7 @@ mod tests {
     fn sealed_object_roundtrips_through_object_store_encoding() {
         // Belt-and-suspenders: encode → decode → unseal still works.
         let alice = KeyPair::generate();
-        let sealed = seal(b"hi", &[alice.public.clone()], b"a/b").unwrap();
+        let sealed = seal(b"hi", std::slice::from_ref(&alice.public), b"a/b").unwrap();
         let raw = sealed.encode().unwrap();
         let back = Sealed::decode(&raw).unwrap();
         assert_eq!(unseal(&back, &alice.secret, b"a/b").unwrap(), b"hi");

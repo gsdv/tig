@@ -27,7 +27,10 @@ fn fixture() -> (axum::Router, tempfile::TempDir) {
 async fn json_body<T: serde::de::DeserializeOwned>(resp: axum::response::Response) -> T {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        panic!("failed to decode JSON: {e}\nbody: {}", String::from_utf8_lossy(&bytes))
+        panic!(
+            "failed to decode JSON: {e}\nbody: {}",
+            String::from_utf8_lossy(&bytes)
+        )
     })
 }
 
@@ -98,14 +101,22 @@ async fn draft_invisible_to_third_party_in_list() {
     let _public = make_public(&app, "alice", "alice's public work").await;
 
     // Bob lists changes — he should only see the public one.
-    let resp = app.clone().oneshot(get_as("/v1/changes", "bob")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/changes", "bob"))
+        .await
+        .unwrap();
     let bobs_view: Vec<ChangeView> = json_body(resp).await;
     assert_eq!(bobs_view.len(), 1);
     assert_eq!(bobs_view[0].description, "alice's public work");
     assert_eq!(bobs_view[0].visibility, "public");
 
     // Alice sees both.
-    let resp = app.clone().oneshot(get_as("/v1/changes", "alice")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/changes", "alice"))
+        .await
+        .unwrap();
     let alice_view: Vec<ChangeView> = json_body(resp).await;
     assert_eq!(alice_view.len(), 2);
 }
@@ -212,7 +223,11 @@ async fn publishing_a_draft_makes_it_visible_to_others() {
     let draft = make_draft(&app, "alice", "secret WIP").await;
 
     // Pre-publish: bob's list is empty.
-    let resp = app.clone().oneshot(get_as("/v1/changes", "bob")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/changes", "bob"))
+        .await
+        .unwrap();
     let listed: Vec<ChangeView> = json_body(resp).await;
     assert!(listed.is_empty());
 
@@ -232,13 +247,21 @@ async fn publishing_a_draft_makes_it_visible_to_others() {
     assert_eq!(after.visibility, "public");
 
     // Now bob sees it.
-    let resp = app.clone().oneshot(get_as("/v1/changes", "bob")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/changes", "bob"))
+        .await
+        .unwrap();
     let listed: Vec<ChangeView> = json_body(resp).await;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, draft.id);
 
     // Op log captured the transition.
-    let resp = app.clone().oneshot(get_as("/v1/oplog", "alice")).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/oplog", "alice"))
+        .await
+        .unwrap();
     let ops: Vec<OpView> = json_body(resp).await;
     let kinds: Vec<&str> = ops.iter().map(|o| o.kind.as_str()).collect();
     assert!(kinds.contains(&"ChangeNew"));

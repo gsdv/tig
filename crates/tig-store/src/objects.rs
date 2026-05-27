@@ -56,7 +56,10 @@ impl FsObjectStore {
             .next()
             .ok_or_else(|| Error::Corrupt("object file is empty".into()))?;
         let kind = ObjectKind::from_tag(tag).map_err(Error::Core)?;
-        Ok(RawObject { kind, bytes: iter.collect() })
+        Ok(RawObject {
+            kind,
+            bytes: iter.collect(),
+        })
     }
 }
 
@@ -128,7 +131,6 @@ impl FsObjectStore {
             }
         }
     }
-
 }
 
 impl ObjectStore for FsObjectStore {
@@ -175,7 +177,7 @@ impl ObjectStore for FsObjectStore {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-    use tig_core::{Blob, Encodable, Tree, TreeEntry, EntryKind, FileMode};
+    use tig_core::{Blob, Encodable, EntryKind, FileMode, Tree, TreeEntry};
 
     fn store() -> (tempfile::TempDir, FsObjectStore) {
         let dir = tempdir().unwrap();
@@ -294,6 +296,9 @@ mod tests {
         fs::write(&p, bytes).unwrap();
 
         let err = s.get(&h).unwrap_err();
-        assert!(matches!(err, Error::Core(tig_core::Error::HashMismatch { .. })));
+        assert!(matches!(
+            err,
+            Error::Core(tig_core::Error::HashMismatch { .. })
+        ));
     }
 }

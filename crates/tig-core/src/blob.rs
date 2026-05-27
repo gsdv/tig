@@ -14,7 +14,9 @@ pub struct Blob {
 
 impl Blob {
     pub fn new(bytes: impl Into<Vec<u8>>) -> Self {
-        Self { bytes: bytes.into() }
+        Self {
+            bytes: bytes.into(),
+        }
     }
 
     pub fn len(&self) -> usize {

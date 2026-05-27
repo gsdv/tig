@@ -23,7 +23,10 @@ fn fixture() -> (axum::Router, tempfile::TempDir) {
 async fn json_body<T: serde::de::DeserializeOwned>(resp: axum::response::Response) -> T {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        panic!("failed to decode JSON: {e}\nbody: {}", String::from_utf8_lossy(&bytes))
+        panic!(
+            "failed to decode JSON: {e}\nbody: {}",
+            String::from_utf8_lossy(&bytes)
+        )
     })
 }
 
@@ -116,14 +119,19 @@ async fn diff_defaults_to_parent_of_current() {
     assert_eq!(diff.files.len(), 1);
     assert_eq!(diff.files[0].path, "a.txt");
     assert_eq!(diff.files[0].kind, "Modified");
-    let hunks = diff.files[0].hunks.as_ref().expect("text file should have hunks");
-    let any_add = hunks
-        .iter()
-        .any(|h| h.lines.iter().any(|l| serde_json::to_string(l).unwrap().contains("\"Add\"")));
+    let hunks = diff.files[0]
+        .hunks
+        .as_ref()
+        .expect("text file should have hunks");
+    let any_add = hunks.iter().any(|h| {
+        h.lines
+            .iter()
+            .any(|l| serde_json::to_string(l).unwrap().contains("\"Add\""))
+    });
     let any_remove = hunks.iter().any(|h| {
-        h.lines.iter().any(|l| {
-            serde_json::to_string(l).unwrap().contains("\"Remove\"")
-        })
+        h.lines
+            .iter()
+            .any(|l| serde_json::to_string(l).unwrap().contains("\"Remove\""))
     });
     assert!(any_add && any_remove);
 }
@@ -142,7 +150,10 @@ async fn diff_explicit_range_uses_supplied_hashes() {
     // Three snaps: v1, v2, v3.
     let _ = app
         .clone()
-        .oneshot(patch_bytes(&format!("/v1/changes/{id}/tree/a.txt"), b"v1\n".to_vec()))
+        .oneshot(patch_bytes(
+            &format!("/v1/changes/{id}/tree/a.txt"),
+            b"v1\n".to_vec(),
+        ))
         .await
         .unwrap();
     let resp = app
@@ -155,12 +166,18 @@ async fn diff_explicit_range_uses_supplied_hashes() {
 
     let _ = app
         .clone()
-        .oneshot(patch_bytes(&format!("/v1/changes/{id}/tree/a.txt"), b"v2\n".to_vec()))
+        .oneshot(patch_bytes(
+            &format!("/v1/changes/{id}/tree/a.txt"),
+            b"v2\n".to_vec(),
+        ))
         .await
         .unwrap();
     let _ = app
         .clone()
-        .oneshot(patch_bytes(&format!("/v1/changes/{id}/tree/a.txt"), b"v3\n".to_vec()))
+        .oneshot(patch_bytes(
+            &format!("/v1/changes/{id}/tree/a.txt"),
+            b"v3\n".to_vec(),
+        ))
         .await
         .unwrap();
     let resp = app
@@ -341,7 +358,10 @@ async fn diff_with_no_hunks_omits_hunks() {
     let id = change.id;
     let _ = app
         .clone()
-        .oneshot(patch_bytes(&format!("/v1/changes/{id}/tree/a.txt"), b"hi\n".to_vec()))
+        .oneshot(patch_bytes(
+            &format!("/v1/changes/{id}/tree/a.txt"),
+            b"hi\n".to_vec(),
+        ))
         .await
         .unwrap();
 

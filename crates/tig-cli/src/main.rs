@@ -12,20 +12,25 @@ use tig_core::{
 };
 use tig_fs::{
     detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
-    materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now,
-    watch_and_snap, write_sealed_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff,
-    HunkLine, MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent,
-    WatchOptions,
+    materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now, watch_and_snap,
+    write_sealed_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff, HunkLine,
+    MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
 };
 use tig_store::{
-    undo_once, workspace_ref_snapshot, write_marker, OpInProgress, OpKind, OpLog, RefStore,
-    RefSnapshot, Repository, Workspace, WorkspaceId, WorkspaceKind, WorkspaceManifest,
+    undo_once, workspace_ref_snapshot, write_marker, OpInProgress, OpKind, OpLog, RefSnapshot,
+    RefStore, Repository, Workspace, WorkspaceId, WorkspaceKind, WorkspaceManifest,
     WorkspaceMarker, WorkspaceStore, DEFAULT_WORKTREE_DIR,
 };
-use tig_vis::{seal as do_seal, unseal as do_unseal, KeyPair, Principal, PrincipalKind, PrincipalStore};
+use tig_vis::{
+    seal as do_seal, unseal as do_unseal, KeyPair, Principal, PrincipalKind, PrincipalStore,
+};
 
 #[derive(Parser)]
-#[command(name = "tig", version, about = "An alternative to git, built for agents")]
+#[command(
+    name = "tig",
+    version,
+    about = "An alternative to git, built for agents"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -237,7 +242,11 @@ fn run(cli: Cli) -> Result<()> {
             cmd_change_transition(id.as_deref(), Some("working"), Some("public"))
         }
         Cmd::Draft { description } => cmd_draft(&description),
-        Cmd::Diff { range, no_hunks, path } => cmd_diff(range.as_deref(), no_hunks, &path),
+        Cmd::Diff {
+            range,
+            no_hunks,
+            path,
+        } => cmd_diff(range.as_deref(), no_hunks, &path),
         Cmd::Restore { snap_prefix, force } => cmd_restore(&snap_prefix, force),
         Cmd::Wt(WtCmd::Make { name, at }) => cmd_wt_make(&name, at.as_deref()),
         Cmd::Wt(WtCmd::List) => cmd_wt_list(),
@@ -247,9 +256,12 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Identity(IdentityCmd::New { name }) => cmd_identity_new(&name),
         Cmd::Identity(IdentityCmd::List) => cmd_identity_list(),
         Cmd::Identity(IdentityCmd::Show { name }) => cmd_identity_show(&name),
-        Cmd::Seal { path, recipients, from_file, data } => {
-            cmd_seal(&path, &recipients, from_file.as_deref(), data.as_deref())
-        }
+        Cmd::Seal {
+            path,
+            recipients,
+            from_file,
+            data,
+        } => cmd_seal(&path, &recipients, from_file.as_deref(), data.as_deref()),
         Cmd::Reveal { path, r#as } => cmd_reveal(&path, r#as.as_deref()),
         Cmd::CatObject { hash } => cmd_cat_object(&hash),
     }
@@ -287,7 +299,10 @@ fn now_ns() -> u64 {
 
 fn cmd_init() -> Result<()> {
     let repo = Repository::init(cwd()?)?;
-    println!("Initialized empty tig repository in {}", repo.root().display());
+    println!(
+        "Initialized empty tig repository in {}",
+        repo.root().display()
+    );
     Ok(())
 }
 
@@ -316,19 +331,25 @@ fn cmd_watch(debounce_ms: u64) -> Result<()> {
     let snap_opts = snap_options(None);
 
     let label = ws.id_for_display();
-    watch_and_snap(&mut ws, &mut log, &watch_opts, &snap_opts, |event| match event {
-        WatchEvent::Started { workdir } => {
-            println!(
-                "watching {} [{label}] (debounce {}ms) — ctrl-c to stop",
-                workdir.display(),
-                debounce_ms
-            );
-        }
-        WatchEvent::Snap(outcome) => print_outcome_one_liner(&outcome),
-        WatchEvent::Idle => {}
-        WatchEvent::Error(e) => eprintln!("  ! {e}"),
-        WatchEvent::Stopped => println!("stopped."),
-    })?;
+    watch_and_snap(
+        &mut ws,
+        &mut log,
+        &watch_opts,
+        &snap_opts,
+        |event| match event {
+            WatchEvent::Started { workdir } => {
+                println!(
+                    "watching {} [{label}] (debounce {}ms) — ctrl-c to stop",
+                    workdir.display(),
+                    debounce_ms
+                );
+            }
+            WatchEvent::Snap(outcome) => print_outcome_one_liner(&outcome),
+            WatchEvent::Idle => {}
+            WatchEvent::Error(e) => eprintln!("  ! {e}"),
+            WatchEvent::Stopped => println!("stopped."),
+        },
+    )?;
     Ok(())
 }
 
@@ -340,7 +361,9 @@ fn print_outcome_one_liner(outcome: &SnapOutcome) {
 
 fn print_snap_outcome(ws: &Workspace, outcome: &SnapOutcome, verbose: bool) {
     match outcome {
-        SnapOutcome::Snapped { snapshot, change, .. } => {
+        SnapOutcome::Snapped {
+            snapshot, change, ..
+        } => {
             let snap = Snapshot::decode(&ws.repo.get(snapshot).expect("just wrote it"))
                 .expect("just encoded it");
             let label = snap.message.as_deref().unwrap_or("(auto)");
@@ -469,7 +492,11 @@ fn cmd_change_list() -> Result<()> {
     let mut any = false;
     for id in ws.repo.refs().list_changes()? {
         let c = ws.repo.get_change(&id)?;
-        let marker = if current.as_ref() == Some(&c.id) { "*" } else { " " };
+        let marker = if current.as_ref() == Some(&c.id) {
+            "*"
+        } else {
+            " "
+        };
         println!(
             "{marker} {}  {:?}/{:<7}  by {:<14} — {}",
             c.id,
@@ -503,16 +530,10 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
     // Destination path.
     let dest = match at {
         Some(p) => p.to_path_buf(),
-        None => source
-            .workdir()
-            .join(DEFAULT_WORKTREE_DIR)
-            .join(name),
+        None => source.workdir().join(DEFAULT_WORKTREE_DIR).join(name),
     };
     if dest.exists() {
-        return Err(anyhow!(
-            "destination already exists: {}",
-            dest.display()
-        ));
+        return Err(anyhow!("destination already exists: {}", dest.display()));
     }
 
     // Look for an existing workspace with the same change — the donor
@@ -531,10 +552,7 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
             let engine = detect_clone_engine();
             let label = engine.name();
             let outcome = materialize_from_workspace(donor_path, &dest, engine.as_ref())?;
-            println!(
-                "  cloned from {} via {label}",
-                donor_path.display()
-            );
+            println!("  cloned from {} via {label}", donor_path.display());
             outcome
         }
         None => {
@@ -610,7 +628,10 @@ fn cmd_wt_list() -> Result<()> {
 
     // Main workspace first.
     let head = ws.repo.head()?;
-    let head_label = head.as_ref().map(|c| c.to_string()).unwrap_or("<none>".into());
+    let head_label = head
+        .as_ref()
+        .map(|c| c.to_string())
+        .unwrap_or("<none>".into());
     println!(
         "* (main)  {}  → change {}",
         ws.repo.workdir().display(),
@@ -619,7 +640,11 @@ fn cmd_wt_list() -> Result<()> {
 
     let current_id = ws.workspace_id().cloned();
     for m in manifests {
-        let marker = if current_id.as_ref() == Some(&m.id) { "*" } else { " " };
+        let marker = if current_id.as_ref() == Some(&m.id) {
+            "*"
+        } else {
+            " "
+        };
         println!(
             "{marker} {}    {}  → change {}",
             m.name,
@@ -643,12 +668,11 @@ fn cmd_wt_drop(name: &str, keep_files: bool) -> Result<()> {
         ));
     }
 
-    if !keep_files {
-        if target.location.exists() {
+    if !keep_files
+        && target.location.exists() {
             std::fs::remove_dir_all(&target.location)
                 .with_context(|| format!("removing {}", target.location.display()))?;
         }
-    }
     let target_snapshot = target.clone();
     store.delete(&target.id)?;
 
@@ -669,7 +693,10 @@ fn cmd_wt_drop(name: &str, keep_files: bool) -> Result<()> {
         }],
     })?;
 
-    println!("dropped workspace {} ({})", target_snapshot.name, target_snapshot.id);
+    println!(
+        "dropped workspace {} ({})",
+        target_snapshot.name, target_snapshot.id
+    );
     if keep_files {
         println!("  files left at {}", target_snapshot.location.display());
     }
@@ -677,11 +704,7 @@ fn cmd_wt_drop(name: &str, keep_files: bool) -> Result<()> {
 }
 
 fn is_valid_workspace_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.contains('/')
-        && !name.contains('\0')
-        && name != "."
-        && name != ".."
+    !name.is_empty() && !name.contains('/') && !name.contains('\0') && name != "." && name != ".."
 }
 
 fn pick_donor(source: &Workspace, target_change: &tig_core::ChangeId) -> Result<Option<PathBuf>> {
@@ -731,14 +754,16 @@ fn cmd_undo() -> Result<()> {
 /// the user so they don't think the rest of undo silently corrupted.
 fn note_files_after_wt_drop_undo(outcome: &tig_store::UndoOutcome) {
     if let OpKind::WtDrop { name, .. } = &outcome.undone.kind {
-        if let Some(RefSnapshot::Workspace { value: Some(m), .. }) = outcome.undone.before.first()
-        {
+        if let Some(RefSnapshot::Workspace { value: Some(m), .. }) = outcome.undone.before.first() {
             if !m.location.exists() {
                 println!(
                     "  note: manifest for {name} restored, but its directory at {} no longer exists.",
                     m.location.display()
                 );
-                println!("        re-materialize with `tig wt make {name} --at {}` if you need it.", m.location.display());
+                println!(
+                    "        re-materialize with `tig wt make {name} --at {}` if you need it.",
+                    m.location.display()
+                );
             }
         }
     }
@@ -825,7 +850,10 @@ fn cmd_draft(description: &str) -> Result<()> {
         },
         before: vec![
             workspace_ref_before,
-            RefSnapshot::Change { id: change.id.clone(), value: None },
+            RefSnapshot::Change {
+                id: change.id.clone(),
+                value: None,
+            },
         ],
         after: vec![
             workspace_ref_after,
@@ -914,7 +942,8 @@ fn resolve_diff_range(
             let (l, r) = r.split_once("..").unwrap();
             if l.is_empty() || r.is_empty() {
                 return Err(anyhow!(
-                    "range {:?} needs prefixes on both sides of `..`", r
+                    "range {:?} needs prefixes on both sides of `..`",
+                    r
                 ));
             }
             let from = ws.repo.resolve_hash_prefix(l)?;
@@ -1138,13 +1167,19 @@ fn cmd_restore(snap_prefix: &str, force: bool) -> Result<()> {
         },
     )?;
     match snap_outcome {
-        SnapOutcome::Snapped { snapshot, change, .. } => {
+        SnapOutcome::Snapped {
+            snapshot, change, ..
+        } => {
             println!(
                 "  snap {}  restore {}",
                 &snapshot.to_hex()[..12],
                 &target_hash.to_hex()[..12],
             );
-            println!("    change {} now at {}", change.id, &change.current.to_hex()[..12]);
+            println!(
+                "    change {} now at {}",
+                change.id,
+                &change.current.to_hex()[..12]
+            );
         }
         SnapOutcome::Unchanged { .. } => {
             // Shouldn't happen given force: true, but be defensive.
@@ -1166,7 +1201,10 @@ fn cmd_identity_new(name: &str) -> Result<()> {
     store.put_new(&p)?;
     println!("created identity {name}");
     println!("  pubkey: {pubkey_hex}");
-    println!("  secret stored at {}/vis/keys/{name}.json", ws.repo.root().display());
+    println!(
+        "  secret stored at {}/vis/keys/{name}.json",
+        ws.repo.root().display()
+    );
     println!("  (the secret never leaves this machine.)");
     Ok(())
 }
@@ -1176,7 +1214,11 @@ fn cmd_identity_list() -> Result<()> {
     let store = PrincipalStore::open(ws.repo.root())?;
     let mut any = false;
     for p in store.list()? {
-        let secret_marker = if p.has_secret() { "[local]" } else { "[remote]" };
+        let secret_marker = if p.has_secret() {
+            "[local]"
+        } else {
+            "[remote]"
+        };
         println!(
             "{:<12} {:<10} {} {secret_marker}",
             p.id,
@@ -1198,7 +1240,14 @@ fn cmd_identity_show(name: &str) -> Result<()> {
     println!("id:     {}", p.id);
     println!("kind:   {:?}", p.kind);
     println!("pubkey: {}", p.pubkey.to_hex());
-    println!("secret: {}", if p.has_secret() { "<local>" } else { "<remote — pubkey only>" });
+    println!(
+        "secret: {}",
+        if p.has_secret() {
+            "<local>"
+        } else {
+            "<remote — pubkey only>"
+        }
+    );
     Ok(())
 }
 

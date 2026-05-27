@@ -7,7 +7,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "tigd", version, about = "tig daemon — HTTP API for one tig repo")]
+#[command(
+    name = "tigd",
+    version,
+    about = "tig daemon — HTTP API for one tig repo"
+)]
 struct Cli {
     /// Path to the repo working directory (the parent of `.tig/`) or
     /// directly to the `.tig/` directory itself.

@@ -20,11 +20,9 @@
 //! doesn't care which — `Workspace::set_current_change_id` routes it.
 
 use crate::{scan, Error, Result, ScanOptions};
-use tig_core::{Change, Encodable, Hash, PrincipalId, Snapshot};
 use tig_core::ChangeId;
-use tig_store::{
-    OpInProgress, OpKind, OpLog, RefSnapshot, Repository, Workspace, WorkspaceKind,
-};
+use tig_core::{Change, Encodable, Hash, PrincipalId, Snapshot};
+use tig_store::{OpInProgress, OpKind, OpLog, RefSnapshot, Repository, Workspace, WorkspaceKind};
 
 #[derive(Clone, Debug)]
 pub struct SnapOptions {
@@ -87,7 +85,11 @@ pub fn snap_now(
             (c.clone(), parents, false, Some(c))
         }
         None => (
-            Change::new(&opts.initial_description, opts.author.clone(), placeholder_hash()),
+            Change::new(
+                &opts.initial_description,
+                opts.author.clone(),
+                placeholder_hash(),
+            ),
             Vec::new(),
             true,
             None,
@@ -117,9 +119,7 @@ pub fn snap_now(
         message: opts.message.clone(),
         op_id: None,
     };
-    let snap_hash = workspace
-        .repo
-        .put(&snap.encode().map_err(Error::Core)?)?;
+    let snap_hash = workspace.repo.put(&snap.encode().map_err(Error::Core)?)?;
 
     if fresh {
         change.current = snap_hash;
@@ -270,7 +270,10 @@ mod tests {
     }
 
     fn snap_messaged(msg: &str) -> SnapOptions {
-        SnapOptions { message: Some(msg.into()), ..opts() }
+        SnapOptions {
+            message: Some(msg.into()),
+            ..opts()
+        }
     }
 
     #[test]
@@ -280,7 +283,11 @@ mod tests {
 
         let outcome = snap_now(&mut ws, &mut log, &snap_messaged("init")).unwrap();
         let head_change_id = match &outcome {
-            SnapOutcome::Snapped { fresh_change, change, .. } => {
+            SnapOutcome::Snapped {
+                fresh_change,
+                change,
+                ..
+            } => {
                 assert!(*fresh_change);
                 assert_eq!(change.history.len(), 1);
                 assert_eq!(change.history[0], change.current);
@@ -300,7 +307,11 @@ mod tests {
         let outcome = snap_now(&mut ws, &mut log, &opts()).unwrap();
         assert!(matches!(outcome, SnapOutcome::Unchanged { .. }));
         // Unchanged should NOT have recorded an op — nothing happened.
-        assert_eq!(log.list().unwrap().len(), 1, "Unchanged should not append an op");
+        assert_eq!(
+            log.list().unwrap().len(),
+            1,
+            "Unchanged should not append an op"
+        );
     }
 
     #[test]
@@ -324,7 +335,10 @@ mod tests {
 
         fs::write(dir.path().join("a.txt"), b"v2").unwrap();
         let outcome = snap_now(&mut ws, &mut log, &opts()).unwrap();
-        let SnapOutcome::Snapped { change, snapshot, .. } = outcome else {
+        let SnapOutcome::Snapped {
+            change, snapshot, ..
+        } = outcome
+        else {
             panic!("an edit should produce a fresh snapshot");
         };
         assert_eq!(change.history.len(), 2);
@@ -343,7 +357,10 @@ mod tests {
         let outcome = snap_now(
             &mut ws,
             &mut log,
-            &SnapOptions { force: true, ..opts() },
+            &SnapOptions {
+                force: true,
+                ..opts()
+            },
         )
         .unwrap();
         assert!(matches!(outcome, SnapOutcome::Snapped { .. }));

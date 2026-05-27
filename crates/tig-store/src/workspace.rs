@@ -181,13 +181,19 @@ impl Workspace {
     /// Wrap an open `Repository` as the main workspace. Convenience for
     /// callers that already have a `Repository`.
     pub fn main_for(repo: Repository) -> Self {
-        Self { repo, kind: WorkspaceKind::Main }
+        Self {
+            repo,
+            kind: WorkspaceKind::Main,
+        }
     }
 
     /// Wrap a manifest as a secondary workspace. The repo must already be
     /// open and refer to the repo named by the manifest.
     pub fn secondary(repo: Repository, manifest: WorkspaceManifest) -> Self {
-        Self { repo, kind: WorkspaceKind::Secondary(manifest) }
+        Self {
+            repo,
+            kind: WorkspaceKind::Secondary(manifest),
+        }
     }
 
     /// Discover the workspace containing `start`. Algorithm:
@@ -365,7 +371,10 @@ mod tests {
 
         let ws = Workspace::discover(dir.path()).unwrap();
         assert!(matches!(ws.kind, WorkspaceKind::Main));
-        assert_eq!(ws.workdir().canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+        assert_eq!(
+            ws.workdir().canonicalize().unwrap(),
+            dir.path().canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -389,7 +398,10 @@ mod tests {
 
         write_marker(
             &secondary,
-            &WorkspaceMarker { repo: repo_dir, workspace_id: m.id.clone() },
+            &WorkspaceMarker {
+                repo: repo_dir,
+                workspace_id: m.id.clone(),
+            },
         )
         .unwrap();
 
@@ -398,7 +410,10 @@ mod tests {
             panic!("expected secondary, got main");
         };
         assert_eq!(found.id, m.id);
-        assert_eq!(ws.workdir().canonicalize().unwrap(), secondary.canonicalize().unwrap());
+        assert_eq!(
+            ws.workdir().canonicalize().unwrap(),
+            secondary.canonicalize().unwrap()
+        );
     }
 
     #[test]

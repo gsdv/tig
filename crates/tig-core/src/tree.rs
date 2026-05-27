@@ -157,11 +157,17 @@ mod tests {
 
     #[test]
     fn invalid_components_rejected() {
-        let bad = TreeEntry { name: "a/b".into(), ..entry("placeholder") };
+        let bad = TreeEntry {
+            name: "a/b".into(),
+            ..entry("placeholder")
+        };
         let r = Tree::from_entries([bad]);
         assert!(r.is_err());
 
-        let dotdot = TreeEntry { name: "..".into(), ..entry("placeholder") };
+        let dotdot = TreeEntry {
+            name: "..".into(),
+            ..entry("placeholder")
+        };
         let r = Tree::from_entries([dotdot]);
         assert!(r.is_err());
     }

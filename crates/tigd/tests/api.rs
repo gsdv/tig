@@ -17,9 +17,7 @@ use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tempfile::tempdir;
-use tig_protocol::{
-    ChangeView, HealthView, OpView, SnapResp, SnapshotView, TreeView, UndoResp,
-};
+use tig_protocol::{ChangeView, HealthView, OpView, SnapResp, SnapshotView, TreeView, UndoResp};
 use tig_store::Repository;
 use tigd::{build_app, AppState};
 use tower::ServiceExt;
@@ -39,12 +37,18 @@ fn fixture() -> (axum::Router, tempfile::TempDir) {
 async fn json_body<T: serde::de::DeserializeOwned>(resp: axum::response::Response) -> T {
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-        panic!("failed to decode JSON: {e}\nbody: {}", String::from_utf8_lossy(&bytes))
+        panic!(
+            "failed to decode JSON: {e}\nbody: {}",
+            String::from_utf8_lossy(&bytes)
+        )
     })
 }
 
 async fn raw_body(resp: axum::response::Response) -> Vec<u8> {
-    to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()
+    to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap()
+        .to_vec()
 }
 
 fn get(path: &str) -> Request<Body> {
@@ -131,9 +135,7 @@ async fn full_lifecycle_over_http() {
     // 4. GET the file back.
     let resp = app
         .clone()
-        .oneshot(get(&format!(
-            "/v1/changes/{change_id}/tree/src/main.rs"
-        )))
+        .oneshot(get(&format!("/v1/changes/{change_id}/tree/src/main.rs")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -190,7 +192,10 @@ async fn full_lifecycle_over_http() {
     let undo: UndoResp = json_body(resp).await;
     let kind = undo.undone_kind.as_deref().unwrap_or_default();
     assert!(kind.starts_with("Snap"), "expected Snap, got {kind:?}");
-    assert!(kind.contains("wrote main.rs"), "expected message, got {kind:?}");
+    assert!(
+        kind.contains("wrote main.rs"),
+        "expected message, got {kind:?}"
+    );
 
     // 10. Op log now has a recorded Undo.
     let resp = app.clone().oneshot(get("/v1/oplog")).await.unwrap();
@@ -205,10 +210,7 @@ async fn patch_then_delete_then_listing_is_empty() {
 
     let resp = app
         .clone()
-        .oneshot(post_json(
-            "/v1/changes",
-            json!({ "description": "x" }),
-        ))
+        .oneshot(post_json("/v1/changes", json!({ "description": "x" })))
         .await
         .unwrap();
     let change: ChangeView = json_body(resp).await;
@@ -267,10 +269,7 @@ async fn patch_traversing_a_file_returns_400() {
     let (app, _dir) = fixture();
     let resp = app
         .clone()
-        .oneshot(post_json(
-            "/v1/changes",
-            json!({ "description": "x" }),
-        ))
+        .oneshot(post_json("/v1/changes", json!({ "description": "x" })))
         .await
         .unwrap();
     let change: ChangeView = json_body(resp).await;
@@ -303,10 +302,7 @@ async fn two_patches_show_up_as_three_ops_total() {
     let (app, _dir) = fixture();
     let resp = app
         .clone()
-        .oneshot(post_json(
-            "/v1/changes",
-            json!({ "description": "x" }),
-        ))
+        .oneshot(post_json("/v1/changes", json!({ "description": "x" })))
         .await
         .unwrap();
     let id: ChangeView = json_body(resp).await;
@@ -340,10 +336,7 @@ async fn snap_with_unchanged_tree_returns_unchanged() {
     let (app, _dir) = fixture();
     let resp = app
         .clone()
-        .oneshot(post_json(
-            "/v1/changes",
-            json!({ "description": "x" }),
-        ))
+        .oneshot(post_json("/v1/changes", json!({ "description": "x" })))
         .await
         .unwrap();
     let id: ChangeView = json_body(resp).await;
@@ -352,10 +345,7 @@ async fn snap_with_unchanged_tree_returns_unchanged() {
     // Snap without writing anything, no message → unchanged.
     let resp = app
         .clone()
-        .oneshot(post_json(
-            &format!("/v1/changes/{id}/snap"),
-            json!({}),
-        ))
+        .oneshot(post_json(&format!("/v1/changes/{id}/snap"), json!({})))
         .await
         .unwrap();
     let snap: SnapResp = json_body(resp).await;

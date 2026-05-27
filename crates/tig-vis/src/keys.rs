@@ -101,7 +101,11 @@ impl SecretKey {
 impl std::fmt::Debug for SecretKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Don't print the bytes — leaking secrets via Debug is a classic.
-        write!(f, "SecretKey(<redacted>, pub={})", &self.public().to_hex()[..16])
+        write!(
+            f,
+            "SecretKey(<redacted>, pub={})",
+            &self.public().to_hex()[..16]
+        )
     }
 }
 
@@ -116,7 +120,10 @@ impl KeyPair {
         let secret = StaticSecret::random_from_rng(OsRng);
         let public_x: XPublicKey = (&secret).into();
         let public = PublicKey(*public_x.as_bytes());
-        KeyPair { secret: SecretKey(secret), public }
+        KeyPair {
+            secret: SecretKey(secret),
+            public,
+        }
     }
 }
 

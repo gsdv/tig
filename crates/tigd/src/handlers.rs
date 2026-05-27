@@ -17,22 +17,20 @@ use axum::Json;
 use bytes::Bytes;
 use serde::Deserialize;
 use tig_core::{
-    can_mutate, can_see, Blob, Change, ChangeId, Encodable, Hash, ObjectKind, PrincipalId,
-    Sealed, Snapshot, Tree, VisLabel,
+    can_mutate, can_see, Blob, Change, ChangeId, Encodable, Hash, ObjectKind, PrincipalId, Sealed,
+    Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path,
-    snap_change_directly, write_blob_at_path, ChangeKind as FsChangeKind, DiffOptions,
-    FileDiff, Hunk, HunkLine, SnapOptions, SnapOutcome,
+    delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path, snap_change_directly,
+    write_blob_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff, Hunk, HunkLine,
+    SnapOptions, SnapOutcome,
 };
 use tig_protocol::{
     ChangeView, CreateChangeReq, DiffQuery, DiffView, ErrorResp, FileDiffView, HealthView,
-    HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView,
-    TransitionReq, TreeView, UndoReq, UndoResp,
+    HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView, TransitionReq,
+    TreeView, UndoReq, UndoResp,
 };
-use tig_store::{
-    undo_once, OpInProgress, OpKind, RefSnapshot,
-};
+use tig_store::{undo_once, OpInProgress, OpKind, RefSnapshot};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -67,11 +65,7 @@ fn caller_from(headers: &HeaderMap) -> PrincipalId {
 /// Returns 404 (not 403) for invisible changes so the daemon doesn't
 /// leak existence to callers without access — this is the same
 /// behaviour the architecture spec describes in §4.2.
-fn load_visible_change(
-    state: &AppState,
-    id: &ChangeId,
-    caller: &PrincipalId,
-) -> ApiResult<Change> {
+fn load_visible_change(state: &AppState, id: &ChangeId, caller: &PrincipalId) -> ApiResult<Change> {
     let change = state
         .repo
         .get_change(id)
@@ -85,11 +79,7 @@ fn load_visible_change(
 /// Stricter check for mutating endpoints. Returns 409 when the change
 /// is *visible* but not mutable (someone else's public change), and 404
 /// when even the existence is hidden.
-fn load_mutable_change(
-    state: &AppState,
-    id: &ChangeId,
-    caller: &PrincipalId,
-) -> ApiResult<Change> {
+fn load_mutable_change(state: &AppState, id: &ChangeId, caller: &PrincipalId) -> ApiResult<Change> {
     let change = load_visible_change(state, id, caller)?;
     if !can_mutate(&change.author, Some(caller)) {
         return Err(ApiError::Conflict(format!(
@@ -135,7 +125,10 @@ fn parse_hash(s: &str) -> ApiResult<Hash> {
 // --- health --------------------------------------------------------------
 
 pub async fn health() -> Json<HealthView> {
-    Json(HealthView { ok: true, version: DAEMON_VERSION.to_string() })
+    Json(HealthView {
+        ok: true,
+        version: DAEMON_VERSION.to_string(),
+    })
 }
 
 // --- changes -------------------------------------------------------------
@@ -197,9 +190,7 @@ pub async fn create_change(
             message: Some("(empty)".into()),
             op_id: None,
         };
-        state
-            .repo
-            .put(&snap.encode().map_err(ApiError::from)?)?
+        state.repo.put(&snap.encode().map_err(ApiError::from)?)?
     };
 
     let mut change = Change::new(req.description.clone(), caller.clone(), parent_snap);
@@ -264,8 +255,7 @@ pub async fn get_tree_root(
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_visible_change(&state, &id, &caller)?;
-    let snap = Snapshot::decode(&state.repo.get(&change.current)?)
-        .map_err(ApiError::from)?;
+    let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
     let tree = Tree::decode(&state.repo.get(&snap.tree)?).map_err(ApiError::from)?;
     Ok(Json(TreeView::from_core(Some(snap.tree), &tree)))
 }
@@ -285,8 +275,7 @@ pub async fn get_tree_path(
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_visible_change(&state, &id, &caller)?;
-    let snap = Snapshot::decode(&state.repo.get(&change.current)?)
-        .map_err(ApiError::from)?;
+    let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
     let parts = path_parts(&path)?;
     let entry = lookup_entry(&state.repo, &snap.tree, &parts).map_err(ApiError::from)?;
@@ -298,7 +287,10 @@ pub async fn get_tree_path(
                 StatusCode::OK,
                 [
                     (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
-                    (axum::http::header::ETAG, &format!("\"{}\"", entry.target.to_hex())),
+                    (
+                        axum::http::header::ETAG,
+                        &format!("\"{}\"", entry.target.to_hex()),
+                    ),
                 ],
                 bytes,
             )
@@ -312,8 +304,7 @@ pub async fn get_tree_path(
             // Sealed entries are returned as JSON so the client can
             // decrypt locally. The daemon never holds principal secrets
             // and never sees the plaintext.
-            let sealed = Sealed::decode(&state.repo.get(&entry.target)?)
-                .map_err(ApiError::from)?;
+            let sealed = Sealed::decode(&state.repo.get(&entry.target)?).map_err(ApiError::from)?;
             Ok((
                 StatusCode::OK,
                 [(
@@ -340,8 +331,7 @@ pub async fn patch_tree_path(
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
-    let snap = Snapshot::decode(&state.repo.get(&change.current)?)
-        .map_err(ApiError::from)?;
+    let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
     let new_tree = write_blob_at_path(&state.repo, snap.tree, &path, body.to_vec())?;
     let mut log = state.log.lock().await;
@@ -367,8 +357,7 @@ pub async fn delete_tree_path(
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
-    let snap = Snapshot::decode(&state.repo.get(&change.current)?)
-        .map_err(ApiError::from)?;
+    let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
     let new_tree = delete_at_path(&state.repo, snap.tree, &path)?;
     let mut log = state.log.lock().await;
@@ -397,8 +386,7 @@ pub async fn snap_change(
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
-    let snap = Snapshot::decode(&state.repo.get(&change.current)?)
-        .map_err(ApiError::from)?;
+    let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
     // `author` on a snap can either echo the caller or be explicitly
     // overridden by the request (useful when an agent-on-behalf-of
@@ -420,7 +408,9 @@ pub async fn snap_change(
     )?;
 
     Ok(Json(match outcome {
-        SnapOutcome::Snapped { snapshot, change, .. } => {
+        SnapOutcome::Snapped {
+            snapshot, change, ..
+        } => {
             let s = Snapshot::decode(&state.repo.get(&snapshot).unwrap()).unwrap();
             SnapResp {
                 outcome: "snapped".into(),
@@ -505,8 +495,7 @@ pub async fn diff_change(
         Some(s) => parse_hash(s)?,
         None => change.current,
     };
-    let to_snap = Snapshot::decode(&state.repo.get(&to_snap_hash)?)
-        .map_err(ApiError::from)?;
+    let to_snap = Snapshot::decode(&state.repo.get(&to_snap_hash)?).map_err(ApiError::from)?;
 
     // Resolve `from`: arg → parent of `to` → empty tree.
     let from_tree = match &q.from {
@@ -665,7 +654,7 @@ pub async fn undo(
 ) -> ApiResult<Json<UndoResp>> {
     let actor = req
         .author
-        .map(|a| PrincipalId(a))
+        .map(PrincipalId)
         .unwrap_or_else(default_actor);
     let mut log = state.log.lock().await;
     let outcome = undo_once(&state.repo, &mut log, &actor)?;

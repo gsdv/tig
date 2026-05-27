@@ -16,9 +16,7 @@ use crate::{Error, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use tig_core::{
-    Blob, Encodable, EntryKind, FileMode, Hash, Tree, TreeEntry,
-};
+use tig_core::{Blob, Encodable, EntryKind, FileMode, Hash, Tree, TreeEntry};
 use tig_store::ObjectStore;
 
 #[derive(Clone, Debug)]
@@ -53,22 +51,17 @@ pub fn scan<S: ObjectStore>(workdir: &Path, store: &S, opts: &ScanOptions) -> Re
     scan_dir(&workdir, store, opts)
 }
 
-fn scan_dir<S: ObjectStore>(
-    dir: &Path,
-    store: &S,
-    opts: &ScanOptions,
-) -> Result<Hash> {
+fn scan_dir<S: ObjectStore>(dir: &Path, store: &S, opts: &ScanOptions) -> Result<Hash> {
     // Collect children first so we can sort and detect duplicates before
     // committing any objects. Helps make the error path clean.
     let mut children: BTreeMap<String, PathBuf> = BTreeMap::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        let name = entry
-            .file_name()
-            .into_string()
-            .map_err(|os| Error::Core(tig_core::Error::InvalidPathComponent(
+        let name = entry.file_name().into_string().map_err(|os| {
+            Error::Core(tig_core::Error::InvalidPathComponent(
                 os.to_string_lossy().into_owned(),
-            )))?;
+            ))
+        })?;
         if opts.ignore.iter().any(|i| i == &name) {
             continue;
         }

@@ -89,9 +89,7 @@ pub enum OpKind {
     },
     /// Undid another op. `undone_op` is that op's id, kept for audit
     /// and so `pick_op_to_undo` can balance regular ops against undos.
-    Undo {
-        undone_op: OpId,
-    },
+    Undo { undone_op: OpId },
 }
 
 impl OpKind {
@@ -101,7 +99,10 @@ impl OpKind {
                 let label = message.as_deref().unwrap_or("(auto)");
                 format!("Snap {}  {label}", &snapshot.to_hex()[..12])
             }
-            OpKind::ChangeNew { change_id, description } => {
+            OpKind::ChangeNew {
+                change_id,
+                description,
+            } => {
                 format!("ChangeNew {change_id}  {description}")
             }
             OpKind::WtMake { workspace_id, name } => {
@@ -139,10 +140,7 @@ pub enum RefSnapshot {
     Head(Option<ChangeId>),
     /// A `Change` record by id. We capture the entire record because its
     /// `history` field grows on every snap and must be restored exactly.
-    Change {
-        id: ChangeId,
-        value: Option<Change>,
-    },
+    Change { id: ChangeId, value: Option<Change> },
     /// A secondary workspace's manifest.
     Workspace {
         id: WorkspaceId,
@@ -183,7 +181,10 @@ impl OpLog {
         let path = dir.join(PRIMARY_FILE);
         // Touch the file so subsequent reads don't fail with NotFound.
         if !path.exists() {
-            fs::OpenOptions::new().create(true).append(true).open(&path)?;
+            fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
         }
         let next_id = compute_next_id(&path)?;
         Ok(OpLog::File(FileLog { path, next_id }))
@@ -245,7 +246,10 @@ impl FileLog {
             .try_into()
             .map_err(|_| Error::Corrupt("oplog record too large".into()))?;
 
-        let mut file = fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         file.write_all(&len.to_be_bytes())?;
         file.write_all(&bytes)?;
         file.sync_all()?;
@@ -336,17 +340,25 @@ impl RefSnapshot {
         match self {
             RefSnapshot::Head(_) => Ok(RefSnapshot::Head(repo.head()?)),
             RefSnapshot::Change { id, .. } => match repo.get_change(id) {
-                Ok(c) => Ok(RefSnapshot::Change { id: id.clone(), value: Some(c) }),
-                Err(Error::NotFound(_)) => {
-                    Ok(RefSnapshot::Change { id: id.clone(), value: None })
-                }
+                Ok(c) => Ok(RefSnapshot::Change {
+                    id: id.clone(),
+                    value: Some(c),
+                }),
+                Err(Error::NotFound(_)) => Ok(RefSnapshot::Change {
+                    id: id.clone(),
+                    value: None,
+                }),
                 Err(e) => Err(e),
             },
             RefSnapshot::Workspace { id, .. } => match workspaces.get(id) {
-                Ok(m) => Ok(RefSnapshot::Workspace { id: id.clone(), value: Some(m) }),
-                Err(Error::NotFound(_)) => {
-                    Ok(RefSnapshot::Workspace { id: id.clone(), value: None })
-                }
+                Ok(m) => Ok(RefSnapshot::Workspace {
+                    id: id.clone(),
+                    value: Some(m),
+                }),
+                Err(Error::NotFound(_)) => Ok(RefSnapshot::Workspace {
+                    id: id.clone(),
+                    value: None,
+                }),
                 Err(e) => Err(e),
             },
             RefSnapshot::Bookmark { name, .. } => Ok(RefSnapshot::Bookmark {
@@ -429,12 +441,17 @@ pub fn undo_once(
 
     let recorded = log.append(OpInProgress {
         actor: actor.clone(),
-        kind: OpKind::Undo { undone_op: target.id },
+        kind: OpKind::Undo {
+            undone_op: target.id,
+        },
         before: before_undo,
         after: target.before.clone(),
     })?;
 
-    Ok(Some(UndoOutcome { undone: target, recorded }))
+    Ok(Some(UndoOutcome {
+        undone: target,
+        recorded,
+    }))
 }
 
 /// Apply a `RefSnapshot` — write its value into the repo so the named
@@ -561,7 +578,10 @@ mod tests {
             },
             before: vec![
                 RefSnapshot::Head(None),
-                RefSnapshot::Change { id: change.id.clone(), value: None },
+                RefSnapshot::Change {
+                    id: change.id.clone(),
+                    value: None,
+                },
             ],
             after: vec![
                 RefSnapshot::Head(Some(change.id.clone())),
@@ -714,7 +734,10 @@ mod tests {
             },
             before: vec![
                 RefSnapshot::Head(None),
-                RefSnapshot::Change { id: change_id.clone(), value: None },
+                RefSnapshot::Change {
+                    id: change_id.clone(),
+                    value: None,
+                },
             ],
             after: vec![
                 RefSnapshot::Head(Some(change_id.clone())),
@@ -800,7 +823,10 @@ mod tests {
             },
             before: vec![
                 RefSnapshot::Head(None),
-                RefSnapshot::Change { id: change_a.id.clone(), value: None },
+                RefSnapshot::Change {
+                    id: change_a.id.clone(),
+                    value: None,
+                },
             ],
             after: vec![
                 RefSnapshot::Head(Some(change_a.id.clone())),
@@ -824,7 +850,10 @@ mod tests {
             },
             before: vec![
                 RefSnapshot::Head(Some(change_a.id.clone())),
-                RefSnapshot::Change { id: change_b.id.clone(), value: None },
+                RefSnapshot::Change {
+                    id: change_b.id.clone(),
+                    value: None,
+                },
             ],
             after: vec![
                 RefSnapshot::Head(Some(change_b.id.clone())),
@@ -837,14 +866,24 @@ mod tests {
         .unwrap();
 
         // First undo → walks back op B; HEAD back to A, B's change gone.
-        undo_once(&repo, &mut log, &PrincipalId::local("u")).unwrap().unwrap();
+        undo_once(&repo, &mut log, &PrincipalId::local("u"))
+            .unwrap()
+            .unwrap();
         assert_eq!(repo.head().unwrap(), Some(change_a.id.clone()));
-        assert!(matches!(repo.get_change(&change_b.id), Err(Error::NotFound(_))));
+        assert!(matches!(
+            repo.get_change(&change_b.id),
+            Err(Error::NotFound(_))
+        ));
 
         // Second undo → walks back op A; HEAD None, A's change gone.
-        undo_once(&repo, &mut log, &PrincipalId::local("u")).unwrap().unwrap();
+        undo_once(&repo, &mut log, &PrincipalId::local("u"))
+            .unwrap()
+            .unwrap();
         assert!(repo.head().unwrap().is_none());
-        assert!(matches!(repo.get_change(&change_a.id), Err(Error::NotFound(_))));
+        assert!(matches!(
+            repo.get_change(&change_a.id),
+            Err(Error::NotFound(_))
+        ));
 
         // Third undo finds nothing.
         assert!(undo_once(&repo, &mut log, &PrincipalId::local("u"))

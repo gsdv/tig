@@ -179,7 +179,10 @@ fn diff_subtree(
                 out.push(emit_change(
                     repo,
                     &path,
-                    ChangeKind::TypeChanged { from: f.kind, to: t.kind },
+                    ChangeKind::TypeChanged {
+                        from: f.kind,
+                        to: t.kind,
+                    },
                     Some(f),
                     Some(t),
                     opts,
@@ -258,7 +261,10 @@ fn emit_change(
 
     let is_file_diffable = matches!(
         (&kind, entry_kind),
-        (ChangeKind::Added | ChangeKind::Removed | ChangeKind::Modified, EntryKind::File)
+        (
+            ChangeKind::Added | ChangeKind::Removed | ChangeKind::Modified,
+            EntryKind::File
+        )
     );
 
     if is_file_diffable && !opts.no_hunks {
@@ -277,11 +283,23 @@ fn emit_change(
         } else {
             let from_text = String::from_utf8_lossy(&from_bytes);
             let to_text = String::from_utf8_lossy(&to_bytes);
-            hunks = Some(blob_diff_hunks(&from_text, &to_text, opts.context_lines.max(1)));
+            hunks = Some(blob_diff_hunks(
+                &from_text,
+                &to_text,
+                opts.context_lines.max(1),
+            ));
         }
     }
 
-    Ok(FileDiff { path: path.to_string(), kind, entry_kind, from_target, to_target, binary, hunks })
+    Ok(FileDiff {
+        path: path.to_string(),
+        kind,
+        entry_kind,
+        from_target,
+        to_target,
+        binary,
+        hunks,
+    })
 }
 
 /// Git-style binary detection: NUL byte in the first ~8 KiB.
@@ -490,7 +508,10 @@ mod tests {
         let (_d, repo, root) = empty_repo();
         let r1 = write_blob_at_path(&repo, root, "a.txt", b"hi\n".to_vec()).unwrap();
         let r2 = write_blob_at_path(&repo, r1, "a.txt", b"bye\n".to_vec()).unwrap();
-        let opts = DiffOptions { no_hunks: true, ..Default::default() };
+        let opts = DiffOptions {
+            no_hunks: true,
+            ..Default::default()
+        };
         let diff = diff_trees(&repo, &r1, &r2, &opts).unwrap();
         assert_eq!(diff.len(), 1);
         assert!(diff[0].hunks.is_none());

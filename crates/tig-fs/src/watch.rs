@@ -54,6 +54,11 @@ impl Default for WatchOptions {
     }
 }
 
+// The `Snap` variant carries a `SnapOutcome` which is much larger than
+// the other variants. Boxing would technically slim the enum but the
+// type is public API and the events are emitted at human-event rate
+// (debounced fs notifications), so it's not perf-critical.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum WatchEvent {
     /// Emitted once at the start, after the watcher is set up.
@@ -93,7 +98,9 @@ pub fn watch_and_snap(
         .watch(&workdir, RecursiveMode::Recursive)
         .map_err(Error::Notify)?;
 
-    on_event(WatchEvent::Started { workdir: workdir.clone() });
+    on_event(WatchEvent::Started {
+        workdir: workdir.clone(),
+    });
 
     loop {
         if opts.stop.load(Ordering::SeqCst) {
@@ -102,9 +109,9 @@ pub fn watch_and_snap(
 
         match rx.recv_timeout(opts.poll_interval) {
             Ok(Ok(events)) => {
-                let touches_workdir = events.iter().any(|de| {
-                    de.event.paths.iter().any(|p| !p.starts_with(&tig_dir))
-                });
+                let touches_workdir = events
+                    .iter()
+                    .any(|de| de.event.paths.iter().any(|p| !p.starts_with(&tig_dir)));
                 let kinds_meaningful = events.iter().any(|de| {
                     matches!(
                         de.event.kind,
@@ -152,7 +159,11 @@ mod tests {
     fn spawn_watcher(
         repo_dir: PathBuf,
         opts: WatchOptions,
-    ) -> (thread::JoinHandle<()>, Arc<Mutex<Vec<WatchEvent>>>, Arc<AtomicBool>) {
+    ) -> (
+        thread::JoinHandle<()>,
+        Arc<Mutex<Vec<WatchEvent>>>,
+        Arc<AtomicBool>,
+    ) {
         let events = Arc::new(Mutex::new(Vec::<WatchEvent>::new()));
         let stop = opts.stop.clone();
 
@@ -173,10 +184,7 @@ mod tests {
         (handle, events, stop)
     }
 
-    fn wait_for<F: Fn() -> bool>(
-        deadline: Duration,
-        condition: F,
-    ) -> bool {
+    fn wait_for<F: Fn() -> bool>(deadline: Duration, condition: F) -> bool {
         let start = Instant::now();
         while start.elapsed() < deadline {
             if condition() {
@@ -284,6 +292,9 @@ mod tests {
             "single edit caused {} snaps — looks like a self-trigger loop",
             snaps.len()
         );
-        assert!(!snaps.is_empty(), "edit should have caused at least one snap");
+        assert!(
+            !snaps.is_empty(),
+            "edit should have caused at least one snap"
+        );
     }
 }

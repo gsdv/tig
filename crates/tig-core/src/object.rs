@@ -82,9 +82,11 @@ pub trait Encodable: Sized + Serialize + DeserializeOwned {
 
     fn encode(&self) -> Result<RawObject> {
         let mut bytes = Vec::new();
-        ciborium::ser::into_writer(self, &mut bytes)
-            .map_err(|e| Error::Encode(e.to_string()))?;
-        Ok(RawObject { kind: Self::KIND, bytes })
+        ciborium::ser::into_writer(self, &mut bytes).map_err(|e| Error::Encode(e.to_string()))?;
+        Ok(RawObject {
+            kind: Self::KIND,
+            bytes,
+        })
     }
 
     fn decode(raw: &RawObject) -> Result<Self> {
@@ -95,8 +97,7 @@ pub trait Encodable: Sized + Serialize + DeserializeOwned {
                 raw.kind.name()
             )));
         }
-        ciborium::de::from_reader(raw.bytes.as_slice())
-            .map_err(|e| Error::Decode(e.to_string()))
+        ciborium::de::from_reader(raw.bytes.as_slice()).map_err(|e| Error::Decode(e.to_string()))
     }
 
     fn hash(&self) -> Result<Hash> {

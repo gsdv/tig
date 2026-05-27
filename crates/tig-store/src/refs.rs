@@ -58,10 +58,7 @@ impl FsRefStore {
     fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
         let dir = path.parent().expect("ref path has a parent");
         fs::create_dir_all(dir)?;
-        let file_name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("ref");
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("ref");
         let tmp = dir.join(format!(".tmp-{file_name}"));
         {
             let mut f = fs::File::create(&tmp)?;
@@ -193,7 +190,11 @@ mod tests {
     #[test]
     fn change_roundtrip() {
         let (_d, r) = refs();
-        let c = Change::new("the work", tig_core::PrincipalId::local("t"), fake_snap_hash());
+        let c = Change::new(
+            "the work",
+            tig_core::PrincipalId::local("t"),
+            fake_snap_hash(),
+        );
         r.put_change(&c).unwrap();
         let back = r.get_change(&c.id).unwrap();
         assert_eq!(c, back);

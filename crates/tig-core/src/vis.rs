@@ -49,19 +49,13 @@ impl VisLabel {
 /// This function is the **single source of truth** for read access.
 /// The daemon's list, fetch, and snapshot endpoints all call through
 /// here. Mutation gating is a stricter check — see `can_mutate`.
-pub fn can_see(
-    visibility: &VisLabel,
-    author: &PrincipalId,
-    caller: Option<&PrincipalId>,
-) -> bool {
+pub fn can_see(visibility: &VisLabel, author: &PrincipalId, caller: Option<&PrincipalId>) -> bool {
     match visibility {
         VisLabel::Public => true,
         VisLabel::Private => caller.map(|c| c == author).unwrap_or(false),
         // Until membership exists, treat group labels as "author only".
         // This is the safer failure mode (deny by default).
-        VisLabel::Org(_) | VisLabel::Team(_) => {
-            caller.map(|c| c == author).unwrap_or(false)
-        }
+        VisLabel::Org(_) | VisLabel::Team(_) => caller.map(|c| c == author).unwrap_or(false),
         VisLabel::Principal(allowed) => {
             caller.map(|c| c == author || c == allowed).unwrap_or(false)
         }

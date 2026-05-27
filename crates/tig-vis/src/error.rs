@@ -22,7 +22,9 @@ pub enum Error {
 
     #[error("not a recipient of this sealed value")]
     NotARecipient,
-    #[error("sealed payload integrity check failed (wrong key, wrong path, or tampered ciphertext)")]
+    #[error(
+        "sealed payload integrity check failed (wrong key, wrong path, or tampered ciphertext)"
+    )]
     AuthFailure,
     #[error("unsupported sealing algorithm")]
     UnsupportedAlgo,

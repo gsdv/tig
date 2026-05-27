@@ -105,7 +105,7 @@ impl Change {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ObjectKind, hash::Hash as H};
+    use crate::{hash::Hash as H, ObjectKind};
 
     fn fake_hash(b: &[u8]) -> Hash {
         H::compute(ObjectKind::Snapshot, b)

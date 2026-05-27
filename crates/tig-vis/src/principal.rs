@@ -50,11 +50,21 @@ impl Principal {
     pub fn new_local(id: impl Into<String>, kind: PrincipalKind, kp: KeyPair) -> Self {
         let pubkey = kp.public.clone();
         let secret_hex = Some(kp.secret.to_hex());
-        Self { id: id.into(), kind, pubkey, secret_hex }
+        Self {
+            id: id.into(),
+            kind,
+            pubkey,
+            secret_hex,
+        }
     }
 
     pub fn new_remote(id: impl Into<String>, kind: PrincipalKind, pubkey: PublicKey) -> Self {
-        Self { id: id.into(), kind, pubkey, secret_hex: None }
+        Self {
+            id: id.into(),
+            kind,
+            pubkey,
+            secret_hex: None,
+        }
     }
 
     pub fn has_secret(&self) -> bool {
@@ -227,7 +237,11 @@ mod tests {
         let store = PrincipalStore::open(dir.path()).unwrap();
         for name in ["zara", "alice", "marvin"] {
             store
-                .put_new(&Principal::new_local(name, PrincipalKind::User, KeyPair::generate()))
+                .put_new(&Principal::new_local(
+                    name,
+                    PrincipalKind::User,
+                    KeyPair::generate(),
+                ))
                 .unwrap();
         }
         let ids: Vec<String> = store.list().unwrap().into_iter().map(|p| p.id).collect();

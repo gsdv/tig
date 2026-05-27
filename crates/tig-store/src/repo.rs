@@ -34,7 +34,11 @@ impl Repository {
 
         let objects = FsObjectStore::open(tig_dir.join("store").join("objects"))?;
         let refs = FsRefStore::open(tig_dir.join("refs"))?;
-        Ok(Self { root: tig_dir, objects, refs })
+        Ok(Self {
+            root: tig_dir,
+            objects,
+            refs,
+        })
     }
 
     /// Open an existing tig repo. Looks for `.tig/` in `workdir` only
@@ -63,7 +67,11 @@ impl Repository {
         }
         let objects = FsObjectStore::open(tig_dir.join("store").join("objects"))?;
         let refs = FsRefStore::open(tig_dir.join("refs"))?;
-        Ok(Self { root: tig_dir, objects, refs })
+        Ok(Self {
+            root: tig_dir,
+            objects,
+            refs,
+        })
     }
 
     /// Walk upward from `start` looking for a `.tig/` directory.
@@ -146,7 +154,11 @@ mod tests {
         let dir = tempdir().unwrap();
         Repository::init(dir.path()).unwrap();
         let repo = Repository::open(dir.path()).unwrap();
-        assert!(repo.root().ends_with(".tig"));
+        // The repo's root path's final component should be ".tig".
+        assert_eq!(
+            repo.root().file_name().and_then(|n| n.to_str()),
+            Some(".tig"),
+        );
     }
 
     #[test]
@@ -164,7 +176,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
 
-        let blob_h = repo.put(&Blob::new(b"hi".to_vec()).encode().unwrap()).unwrap();
+        let blob_h = repo
+            .put(&Blob::new(b"hi".to_vec()).encode().unwrap())
+            .unwrap();
         let tree_h = repo.put(&Tree::new().encode().unwrap()).unwrap();
         let snap = Snapshot {
             parents: vec![],

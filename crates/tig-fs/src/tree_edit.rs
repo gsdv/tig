@@ -32,7 +32,14 @@ pub fn write_blob_at_path(
     let parts = split_path(path)?;
     let blob = Blob::new(bytes);
     let blob_hash = repo.put(&blob.encode().map_err(Error::Core)?)?;
-    rewrite_insert(repo, &root_tree, &parts, blob_hash, EntryKind::File, FileMode::REGULAR)
+    rewrite_insert(
+        repo,
+        &root_tree,
+        &parts,
+        blob_hash,
+        EntryKind::File,
+        FileMode::REGULAR,
+    )
 }
 
 /// Same as [`write_blob_at_path`] but writes a `Sealed` object and tags
@@ -45,7 +52,14 @@ pub fn write_sealed_at_path(
 ) -> Result<Hash> {
     let parts = split_path(path)?;
     let sealed_hash = repo.put(&sealed.encode().map_err(Error::Core)?)?;
-    rewrite_insert(repo, &root_tree, &parts, sealed_hash, EntryKind::Sealed, FileMode::REGULAR)
+    rewrite_insert(
+        repo,
+        &root_tree,
+        &parts,
+        sealed_hash,
+        EntryKind::Sealed,
+        FileMode::REGULAR,
+    )
 }
 
 /// Read the raw bytes of the blob at `path`. Fails if `path` resolves
@@ -137,7 +151,9 @@ fn split_path(path: &str) -> Result<Vec<String>> {
     }
     for p in &parts {
         if p == "." || p == ".." || p.contains('\0') {
-            return Err(Error::Core(tig_core::Error::InvalidPathComponent(p.clone())));
+            return Err(Error::Core(tig_core::Error::InvalidPathComponent(
+                p.clone(),
+            )));
         }
     }
     Ok(parts)
@@ -190,14 +206,11 @@ fn rewrite_insert(
         .map_err(Error::Core)?;
     }
 
-    repo.put(&tree.encode().map_err(Error::Core)?).map_err(Error::Store)
+    repo.put(&tree.encode().map_err(Error::Core)?)
+        .map_err(Error::Store)
 }
 
-fn rewrite_remove(
-    repo: &Repository,
-    tree_hash: &Hash,
-    parts: &[String],
-) -> Result<Hash> {
+fn rewrite_remove(repo: &Repository, tree_hash: &Hash, parts: &[String]) -> Result<Hash> {
     let mut tree = Tree::decode(&repo.get(tree_hash)?).map_err(Error::Core)?;
 
     if parts.len() == 1 {
@@ -246,7 +259,8 @@ fn rewrite_remove(
         }
     }
 
-    repo.put(&tree.encode().map_err(Error::Core)?).map_err(Error::Store)
+    repo.put(&tree.encode().map_err(Error::Core)?)
+        .map_err(Error::Store)
 }
 
 #[cfg(test)]
@@ -275,8 +289,7 @@ mod tests {
     fn write_creates_intermediate_subtrees() {
         let (_d, repo, root) = empty_repo();
         let new_root =
-            write_blob_at_path(&repo, root, "src/sub/deep/leaf.rs", b"contents".to_vec())
-                .unwrap();
+            write_blob_at_path(&repo, root, "src/sub/deep/leaf.rs", b"contents".to_vec()).unwrap();
         assert_eq!(
             read_blob_at_path(&repo, new_root, "src/sub/deep/leaf.rs").unwrap(),
             b"contents"
@@ -351,11 +364,19 @@ mod tests {
         let r3 = write_blob_at_path(&repo, r2, "README.md", b"z".to_vec()).unwrap();
 
         let root_listing = list_tree(&repo, r3, "").unwrap();
-        let names: Vec<&str> = root_listing.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = root_listing
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["README.md", "src"]);
 
         let src_listing = list_tree(&repo, r3, "src").unwrap();
-        let names: Vec<&str> = src_listing.entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = src_listing
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         assert_eq!(names, vec!["a.rs", "b.rs"]);
     }
 

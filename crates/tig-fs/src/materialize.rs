@@ -26,7 +26,10 @@ use tig_store::Repository;
 #[derive(Clone, Debug)]
 pub enum MaterializeOutcome {
     /// Used a donor workspace's existing on-disk tree.
-    Cloned { engine: &'static str, donor: std::path::PathBuf },
+    Cloned {
+        engine: &'static str,
+        donor: std::path::PathBuf,
+    },
     /// Walked the object store and wrote everything from scratch.
     Rendered { files: usize, bytes: u64 },
 }
@@ -122,10 +125,7 @@ pub fn render_tree_into(repo: &Repository, tree_hash: &Hash, dst: &Path) -> Resu
 /// Empty result means the tree is safe to render unconditionally —
 /// the caller can then call `render_tree_into` without worrying about
 /// crypto. Used by `restore` to refuse a half-finished render.
-pub fn collect_sealed_paths(
-    repo: &Repository,
-    tree_hash: &Hash,
-) -> Result<Vec<String>> {
+pub fn collect_sealed_paths(repo: &Repository, tree_hash: &Hash) -> Result<Vec<String>> {
     let mut out = Vec::new();
     walk_for_sealed(repo, tree_hash, "", &mut out)?;
     Ok(out)
@@ -201,7 +201,10 @@ fn render_tree(
             EntryKind::Sealed | EntryKind::Conflict | EntryKind::Submodule => {
                 return Err(Error::UnsupportedFileKind {
                     path: child.display().to_string(),
-                    kind: format!("{:?} (milestone 1 cannot materialize this kind)", entry.kind),
+                    kind: format!(
+                        "{:?} (milestone 1 cannot materialize this kind)",
+                        entry.kind
+                    ),
                 });
             }
         }
@@ -212,9 +215,7 @@ fn render_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        clone::CopyFallback, scan, snap::snap_now, ScanOptions, SnapOptions, SnapOutcome,
-    };
+    use crate::{clone::CopyFallback, scan, snap::snap_now, ScanOptions, SnapOptions, SnapOutcome};
     use std::fs;
     use tempfile::tempdir;
     use tig_core::{PrincipalId, Snapshot};
@@ -255,9 +256,15 @@ mod tests {
             panic!("expected Rendered, got {outcome:?}");
         };
         assert_eq!(files, 2);
-        assert_eq!(bytes, b"alpha".len() as u64 + b"beta beta beta".len() as u64);
+        assert_eq!(
+            bytes,
+            b"alpha".len() as u64 + b"beta beta beta".len() as u64
+        );
         assert_eq!(fs::read(target.join("a.txt")).unwrap(), b"alpha");
-        assert_eq!(fs::read(target.join("sub/b.txt")).unwrap(), b"beta beta beta");
+        assert_eq!(
+            fs::read(target.join("sub/b.txt")).unwrap(),
+            b"beta beta beta"
+        );
     }
 
     #[test]
@@ -290,7 +297,10 @@ mod tests {
 
         assert_eq!(fs::read(dst.join("x.txt")).unwrap(), b"hi");
         assert_eq!(fs::read(dst.join("sub/y.txt")).unwrap(), b"there");
-        assert!(!dst.join(tig_store::MARKER_FILE).exists(), "marker should be scrubbed");
+        assert!(
+            !dst.join(tig_store::MARKER_FILE).exists(),
+            "marker should be scrubbed"
+        );
         assert!(
             !dst.join(tig_store::DEFAULT_WORKTREE_DIR).exists(),
             "sibling worktrees dir should be scrubbed"

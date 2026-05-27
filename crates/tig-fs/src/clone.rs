@@ -207,7 +207,10 @@ fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
             // for milestone 1; surface a clear error.
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                format!("symlink copy not yet supported on this platform: {}", src.display()),
+                format!(
+                    "symlink copy not yet supported on this platform: {}",
+                    src.display()
+                ),
             ));
         }
         Ok(())
@@ -227,10 +230,7 @@ mod tests {
     }
 
     fn engine_for_each_test() -> [(&'static str, Box<dyn CloneEngine>); 2] {
-        [
-            ("auto", detect()),
-            ("copy-only", Box::new(CopyFallback)),
-        ]
+        [("auto", detect()), ("copy-only", Box::new(CopyFallback))]
     }
 
     #[test]
@@ -241,7 +241,8 @@ mod tests {
             let dst = dir.path().join("b");
             fs::write(&src, b"hello").unwrap();
 
-            eng.clone_path(&src, &dst).unwrap_or_else(|e| panic!("{label}: {e}"));
+            eng.clone_path(&src, &dst)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(read(&dst), b"hello", "engine {label}");
         }
     }
@@ -257,7 +258,8 @@ mod tests {
             fs::write(src.join("sub/b.txt"), b"beta").unwrap();
 
             let dst = dir.path().join("dst");
-            eng.clone_path(&src, &dst).unwrap_or_else(|e| panic!("{label}: {e}"));
+            eng.clone_path(&src, &dst)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
 
             assert_eq!(read(&dst.join("a.txt")), b"alpha", "engine {label}");
             assert_eq!(read(&dst.join("sub/b.txt")), b"beta", "engine {label}");
@@ -290,11 +292,19 @@ mod tests {
             std::os::unix::fs::symlink(&target, &link_src).unwrap();
 
             let link_dst = dir.path().join("link_dst");
-            eng.clone_path(&link_src, &link_dst).unwrap_or_else(|e| panic!("{label}: {e}"));
+            eng.clone_path(&link_src, &link_dst)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
 
             let meta = fs::symlink_metadata(&link_dst).unwrap();
-            assert!(meta.file_type().is_symlink(), "engine {label} dereferenced symlink");
-            assert_eq!(read(&link_dst), b"contents", "symlink target wrong, engine {label}");
+            assert!(
+                meta.file_type().is_symlink(),
+                "engine {label} dereferenced symlink"
+            );
+            assert_eq!(
+                read(&link_dst),
+                b"contents",
+                "symlink target wrong, engine {label}"
+            );
         }
     }
 

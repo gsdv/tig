@@ -20,8 +20,8 @@ pub struct AppState {
 
 impl AppState {
     pub fn open(repo_root: PathBuf) -> anyhow::Result<Self> {
-        let repo = Repository::open_at_tig_dir(&repo_root)
-            .or_else(|_| Repository::open(&repo_root))?;
+        let repo =
+            Repository::open_at_tig_dir(&repo_root).or_else(|_| Repository::open(&repo_root))?;
         let log = OpLog::open(repo.root())?;
         Ok(Self {
             repo: Arc::new(repo),

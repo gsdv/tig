@@ -20,8 +20,7 @@
 
 use crate::{
     materialize::{collect_sealed_paths, render_tree_into, RenderStats},
-    scan,
-    Error, Result, ScanOptions,
+    scan, Error, Result, ScanOptions,
 };
 use std::fs;
 use std::path::Path;
@@ -29,6 +28,7 @@ use tig_core::{Encodable, Hash, Snapshot};
 use tig_store::Repository;
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct RestoreOptions {
     /// Force the restore even if the workdir is dirty (has uncommitted
     /// changes vs. the current snapshot). Without this, restore refuses
@@ -36,11 +36,6 @@ pub struct RestoreOptions {
     pub force: bool,
 }
 
-impl Default for RestoreOptions {
-    fn default() -> Self {
-        Self { force: false }
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct RestoreOutcome {
@@ -112,7 +107,11 @@ pub fn restore_tree_into(
     // Step 4: render the target tree into the now-empty workdir.
     let render = render_tree_into(repo, &target.tree, workdir)?;
 
-    Ok(RestoreOutcome { tree: target.tree, render, top_level_removed: removed })
+    Ok(RestoreOutcome {
+        tree: target.tree,
+        render,
+        top_level_removed: removed,
+    })
 }
 
 fn clear_workdir(workdir: &Path) -> Result<usize> {
@@ -145,7 +144,10 @@ mod tests {
     use crate::{snap_now, SnapOptions, SnapOutcome};
     use std::fs;
     use tempfile::tempdir;
-    use tig_core::{Encodable, EntryKind, FileMode, PrincipalId, RecipientWrap, SealAlgo, Sealed, Tree, TreeEntry};
+    use tig_core::{
+        Encodable, EntryKind, FileMode, PrincipalId, RecipientWrap, SealAlgo, Sealed, Tree,
+        TreeEntry,
+    };
     use tig_store::{ObjectStore, OpLog, Workspace};
 
     /// Set up a workspace with two snaps: v1 (single file "a"="alpha")
@@ -195,14 +197,9 @@ mod tests {
         assert!(dir.path().join("a").exists());
         assert!(dir.path().join("b").exists());
 
-        let outcome = restore_tree_into(
-            &ws.repo,
-            &v1,
-            ws.workdir(),
-            &v2,
-            &RestoreOptions::default(),
-        )
-        .unwrap();
+        let outcome =
+            restore_tree_into(&ws.repo, &v1, ws.workdir(), &v2, &RestoreOptions::default())
+                .unwrap();
         assert_eq!(outcome.render.files, 1);
         assert_eq!(outcome.render.bytes, 5);
 
@@ -218,14 +215,8 @@ mod tests {
         let (dir, ws, _log, v1, v2) = fixture_two_snaps();
         let tig_dir = dir.path().join(".tig");
         assert!(tig_dir.is_dir());
-        let _ = restore_tree_into(
-            &ws.repo,
-            &v1,
-            ws.workdir(),
-            &v2,
-            &RestoreOptions::default(),
-        )
-        .unwrap();
+        let _ = restore_tree_into(&ws.repo, &v1, ws.workdir(), &v2, &RestoreOptions::default())
+            .unwrap();
         assert!(tig_dir.is_dir(), ".tig must survive a restore");
         // The store should still be functional.
         assert!(ws.repo.objects().has(&v1).unwrap());
@@ -315,7 +306,10 @@ mod tests {
         .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("sealed"), "got: {msg}");
-        assert!(msg.contains("secret"), "expected the sealed path in the error, got: {msg}");
+        assert!(
+            msg.contains("secret"),
+            "expected the sealed path in the error, got: {msg}"
+        );
         // The "a" file (from v2) must still be there — sealed check fired before clearing.
         assert!(dir.path().join("a").exists());
         assert!(dir.path().join("b").exists());
@@ -325,16 +319,9 @@ mod tests {
     fn restore_then_rescan_recovers_same_tree_hash() {
         // Round-trip: snap v2, restore v1, scan — should equal v1's tree.
         let (_dir, ws, _log, v1, v2) = fixture_two_snaps();
-        let _ = restore_tree_into(
-            &ws.repo,
-            &v1,
-            ws.workdir(),
-            &v2,
-            &RestoreOptions::default(),
-        )
-        .unwrap();
-        let scanned =
-            scan(ws.workdir(), ws.repo.objects(), &ScanOptions::default()).unwrap();
+        let _ = restore_tree_into(&ws.repo, &v1, ws.workdir(), &v2, &RestoreOptions::default())
+            .unwrap();
+        let scanned = scan(ws.workdir(), ws.repo.objects(), &ScanOptions::default()).unwrap();
         let v1_snap = Snapshot::decode(&ws.repo.get(&v1).unwrap()).unwrap();
         assert_eq!(scanned, v1_snap.tree);
     }

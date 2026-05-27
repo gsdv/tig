@@ -20,16 +20,16 @@ pub mod snap;
 pub mod tree_edit;
 pub mod watch;
 
-pub use clone::{detect as detect_clone_engine, AutoClone, CloneEngine, CopyFallback};
 #[cfg(target_os = "macos")]
 pub use clone::ApfsClone;
+pub use clone::{detect as detect_clone_engine, AutoClone, CloneEngine, CopyFallback};
 pub use diff::{
     blob_diff_hunks, diff_trees, is_binary, ChangeKind, DiffOptions, FileDiff, Hunk, HunkLine,
 };
 pub use error::Error;
 pub use materialize::{
-    collect_sealed_paths, materialize_change_into, materialize_from_workspace,
-    render_tree_into, MaterializeOutcome, RenderStats,
+    collect_sealed_paths, materialize_change_into, materialize_from_workspace, render_tree_into,
+    MaterializeOutcome, RenderStats,
 };
 pub use restore::{restore_tree_into, RestoreOptions, RestoreOutcome};
 pub use scan::{scan, ScanOptions};

@@ -81,7 +81,10 @@ mod tests {
             message: None,
             op_id: None,
         };
-        let b = Snapshot { parents: vec![blob_hash], ..a.clone() };
+        let b = Snapshot {
+            parents: vec![blob_hash],
+            ..a.clone()
+        };
         assert_ne!(a.hash().unwrap(), b.hash().unwrap());
     }
 }

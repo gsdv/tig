@@ -1,5 +1,7 @@
 # tig
 
+[![CI](https://github.com/gsdv/tig/actions/workflows/ci.yml/badge.svg)](https://github.com/gsdv/tig/actions/workflows/ci.yml)
+
 An alternative to git, built for agents. Hosted, with appropriate irony,
 on GitHub.
 

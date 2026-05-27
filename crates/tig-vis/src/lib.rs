@@ -21,7 +21,7 @@ pub mod principal;
 pub mod seal;
 
 pub use error::Error;
-pub use keys::{PublicKey, SecretKey, KeyPair};
+pub use keys::{KeyPair, PublicKey, SecretKey};
 pub use principal::{Principal, PrincipalKind, PrincipalStore};
 pub use seal::{seal, unseal};
 
