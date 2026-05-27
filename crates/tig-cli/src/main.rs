@@ -57,6 +57,10 @@ enum Cmd {
     Log {
         #[arg(long)]
         all: bool,
+        /// Show each snapshot's diff against its parent (unified format).
+        /// Equivalent of `git log -p`.
+        #[arg(short = 'p', long = "patch")]
+        patch: bool,
     },
 
     /// Show what HEAD points at.
@@ -110,12 +114,13 @@ enum Cmd {
     /// in-flight PR" from Theo's §1.
     Draft { description: String },
 
-    /// Show changes between two snapshots, in unified-diff format.
+    /// Show changes in unified-diff format. Defaults follow git's
+    /// conventions — the workdir is the implicit "to" side.
     ///
     /// RANGE forms:
-    ///   tig diff                 (parent of current snap → current)
-    ///   tig diff <prefix>        (parent of <prefix> → <prefix>)
-    ///   tig diff <from>..<to>    (explicit range)
+    ///   tig diff                 (current snap → workdir)
+    ///   tig diff <prefix>        (<prefix> snap → workdir)
+    ///   tig diff <from>..<to>    (snap-to-snap, no workdir involved)
     Diff {
         #[arg(value_name = "RANGE")]
         range: Option<String>,
@@ -228,7 +233,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Init => cmd_init(),
         Cmd::Snap { message } => cmd_snap(message),
         Cmd::Watch { debounce_ms } => cmd_watch(debounce_ms),
-        Cmd::Log { all } => cmd_log(all),
+        Cmd::Log { all, patch } => cmd_log(all, patch),
         Cmd::Status => cmd_status(),
         Cmd::Change(ChangeCmd::New { description }) => cmd_change_new(&description),
         Cmd::Change(ChangeCmd::List) => cmd_change_list(),
@@ -308,6 +313,7 @@ fn cmd_init() -> Result<()> {
 
 fn cmd_snap(message: Option<String>) -> Result<()> {
     let mut ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
     let outcome = snap_now(&mut ws, &mut log, &snap_options(message))?;
     print_snap_outcome(&ws, &outcome, /* verbose */ true);
@@ -384,7 +390,7 @@ fn print_snap_outcome(ws: &Workspace, outcome: &SnapOutcome, verbose: bool) {
     }
 }
 
-fn cmd_log(all: bool) -> Result<()> {
+fn cmd_log(all: bool, patch: bool) -> Result<()> {
     let ws = discover_workspace()?;
     let head = ws
         .current_change_id()?
@@ -401,6 +407,12 @@ fn cmd_log(all: bool) -> Result<()> {
     );
     println!();
 
+    let diff_opts = DiffOptions {
+        no_hunks: false,
+        paths: Vec::new(),
+        context_lines: 3,
+    };
+
     for h in change.history.iter().rev() {
         let snap = Snapshot::decode(&ws.repo.get(h)?)?;
         if !all && snap.message.is_none() {
@@ -410,8 +422,102 @@ fn cmd_log(all: bool) -> Result<()> {
         let label = snap.message.as_deref().unwrap_or("(auto)");
         let ts = format_ts(snap.timestamp_ns);
         println!("  {short}  {ts}  {}  — {label}", snap.author);
+
+        if patch {
+            // Compute diff against this snap's parent. Root snaps diff
+            // against the empty tree.
+            let parent_tree = match snap.parents.first() {
+                Some(p) => Snapshot::decode(&ws.repo.get(p)?)?.tree,
+                None => ws.repo.put(&Tree::new().encode()?)?,
+            };
+            let diffs = diff_trees(&ws.repo, &parent_tree, &snap.tree, &diff_opts)?;
+            // Indent each diff line under the log entry so it's visually
+            // attached to the snap above it.
+            for fd in &diffs {
+                print_file_diff_indented(fd, "    ");
+            }
+            if !diffs.is_empty() {
+                println!();
+            }
+        }
     }
     Ok(())
+}
+
+/// Same as `print_file_diff` but prefixes every output line with
+/// `prefix`. Used by `log -p` so the inline diffs visually nest under
+/// each snap entry.
+fn print_file_diff_indented(fd: &FileDiff, prefix: &str) {
+    use std::fmt::Write as _;
+    // Render to a string and emit each line with the prefix. This
+    // avoids forking the format-emitting code.
+    let mut buf = String::new();
+    let _ = writeln!(&mut buf, "diff --tig a/{0} b/{0}", fd.path);
+    match &fd.kind {
+        FsChangeKind::TypeChanged { from, to } => {
+            let _ = writeln!(&mut buf, "type changed: {from:?} -> {to:?}");
+            print_indented(&buf, prefix);
+            return;
+        }
+        FsChangeKind::Added => {
+            let _ = writeln!(&mut buf, "new {} mode", entry_kind_label(fd.entry_kind));
+        }
+        FsChangeKind::Removed => {
+            let _ = writeln!(&mut buf, "removed {}", entry_kind_label(fd.entry_kind));
+        }
+        FsChangeKind::Modified => {}
+    }
+    if fd.entry_kind != tig_core::EntryKind::File {
+        print_indented(&buf, prefix);
+        return;
+    }
+    if fd.binary {
+        let _ = writeln!(&mut buf, "Binary files a/{0} and b/{0} differ", fd.path);
+        print_indented(&buf, prefix);
+        return;
+    }
+    let (left, right) = match fd.kind {
+        FsChangeKind::Added => ("/dev/null".to_string(), format!("b/{}", fd.path)),
+        FsChangeKind::Removed => (format!("a/{}", fd.path), "/dev/null".to_string()),
+        _ => (format!("a/{}", fd.path), format!("b/{}", fd.path)),
+    };
+    let _ = writeln!(&mut buf, "--- {left}");
+    let _ = writeln!(&mut buf, "+++ {right}");
+    if let Some(hunks) = &fd.hunks {
+        for h in hunks {
+            let from_r = if h.from_len == 1 {
+                format!("{}", h.from_start)
+            } else {
+                format!("{},{}", h.from_start, h.from_len)
+            };
+            let to_r = if h.to_len == 1 {
+                format!("{}", h.to_start)
+            } else {
+                format!("{},{}", h.to_start, h.to_len)
+            };
+            let _ = writeln!(&mut buf, "@@ -{from_r} +{to_r} @@");
+            for line in &h.lines {
+                match line {
+                    HunkLine::Context(s) => {
+                        let _ = writeln!(&mut buf, " {s}");
+                    }
+                    HunkLine::Add(s) => {
+                        let _ = writeln!(&mut buf, "+{s}");
+                    }
+                    HunkLine::Remove(s) => {
+                        let _ = writeln!(&mut buf, "-{s}");
+                    }
+                }
+            }
+        }
+    }
+    print_indented(&buf, prefix);
+}
+
+fn print_indented(buf: &str, prefix: &str) {
+    for line in buf.lines() {
+        println!("{prefix}{line}");
+    }
 }
 
 fn cmd_status() -> Result<()> {
@@ -437,6 +543,7 @@ fn cmd_status() -> Result<()> {
 
 fn cmd_change_new(description: &str) -> Result<()> {
     let mut ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
 
     let current = match ws.current_change_id()? {
@@ -523,6 +630,7 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
     }
 
     let source = discover_workspace()?;
+    let _lock = source.repo.lock_for_write()?;
     let source_change = source
         .current_change_id()?
         .ok_or_else(|| anyhow!("nothing checked out here yet — try `tig snap` first"))?;
@@ -657,6 +765,7 @@ fn cmd_wt_list() -> Result<()> {
 
 fn cmd_wt_drop(name: &str, keep_files: bool) -> Result<()> {
     let ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let store = WorkspaceStore::open(ws.repo.root())?;
     let target = store
         .find_by_name(name)?
@@ -734,6 +843,7 @@ fn pick_donor(source: &Workspace, target_change: &tig_core::ChangeId) -> Result<
 
 fn cmd_undo() -> Result<()> {
     let ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
     let actor = principal();
     match undo_once(&ws.repo, &mut log, &actor)? {
@@ -815,6 +925,7 @@ fn parse_vis_str(s: &str) -> Result<VisLabel> {
 
 fn cmd_draft(description: &str) -> Result<()> {
     let mut ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
 
     // Bootstrap an empty snapshot if there's no current change yet —
@@ -878,6 +989,7 @@ fn cmd_change_transition(
     vis_str: Option<&str>,
 ) -> Result<()> {
     let ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let id = match id_opt {
         Some(s) => tig_core::ChangeId(s.to_string()),
         None => ws
@@ -928,101 +1040,107 @@ fn cmd_change_transition(
 
 // --- diff ----------------------------------------------------------------
 
-/// Resolve the (from_snap, to_snap) pair from a range argument. Forms:
-///   None             → (parent of HEAD's current, HEAD's current)
-///   Some("abc")      → (parent of abc, abc)
-///   Some("a..b")     → (a, b)
-fn resolve_diff_range(
+/// Resolve diff endpoints into `(from_tree, to_tree, from_label, to_label)`
+/// following git's conventions:
+///
+///   None             → from = current snap's tree,    to = scanned workdir
+///   Some("abc")      → from = abc snap's tree,        to = scanned workdir
+///   Some("a..b")     → from = a snap's tree,          to = b snap's tree
+///
+/// In the first two forms the workdir is the implicit "to" — that
+/// answers "what would my next snap capture?", which is the most common
+/// question after editing files. To compare two stored snapshots use
+/// the explicit `a..b` form.
+fn resolve_diff_endpoints(
     ws: &Workspace,
     range: Option<&str>,
-) -> Result<(tig_core::Hash, tig_core::Hash)> {
-    let to = match range {
+) -> Result<(tig_core::Hash, tig_core::Hash, String, String)> {
+    match range {
+        // Explicit range: never involves the workdir.
         Some(r) if r.contains("..") => {
-            let (l, r) = r.split_once("..").unwrap();
-            if l.is_empty() || r.is_empty() {
+            let (l, r2) = r.split_once("..").unwrap();
+            if l.is_empty() || r2.is_empty() {
                 return Err(anyhow!(
                     "range {:?} needs prefixes on both sides of `..`",
                     r
                 ));
             }
-            let from = ws.repo.resolve_hash_prefix(l)?;
-            let to = ws.repo.resolve_hash_prefix(r)?;
-            return Ok((from, to));
+            let from_h = ws.repo.resolve_hash_prefix(l)?;
+            let to_h = ws.repo.resolve_hash_prefix(r2)?;
+            let from_snap = Snapshot::decode(&ws.repo.get(&from_h)?)?;
+            let to_snap = Snapshot::decode(&ws.repo.get(&to_h)?)?;
+            Ok((
+                from_snap.tree,
+                to_snap.tree,
+                format!("snap {}", &from_h.to_hex()[..12]),
+                format!("snap {}", &to_h.to_hex()[..12]),
+            ))
         }
-        Some(r) => ws.repo.resolve_hash_prefix(r)?,
+        // Single prefix: workdir is the "to" side.
+        Some(r) => {
+            let from_h = ws.repo.resolve_hash_prefix(r)?;
+            let from_snap = Snapshot::decode(&ws.repo.get(&from_h)?)?;
+            let to_tree = scan_workdir(ws)?;
+            Ok((
+                from_snap.tree,
+                to_tree,
+                format!("snap {}", &from_h.to_hex()[..12]),
+                "workdir".to_string(),
+            ))
+        }
+        // No args: current snap → workdir. The "what would my next snap
+        // capture?" question.
         None => {
             let id = ws
                 .current_change_id()?
                 .ok_or_else(|| anyhow!("no current change to diff"))?;
-            ws.repo.get_change(&id)?.current
+            let current = ws.repo.get_change(&id)?.current;
+            let current_snap = Snapshot::decode(&ws.repo.get(&current)?)?;
+            let to_tree = scan_workdir(ws)?;
+            Ok((
+                current_snap.tree,
+                to_tree,
+                format!("snap {}", &current.to_hex()[..12]),
+                "workdir".to_string(),
+            ))
         }
-    };
+    }
+}
 
-    // `to` is set. Derive `from` = parent of `to`.
-    let to_snap = Snapshot::decode(&ws.repo.get(&to)?)?;
-    let from = match to_snap.parents.first() {
-        Some(p) => {
-            // The parent is a Snapshot; we use its *tree* downstream,
-            // but the diff engine takes tree hashes. Return the parent
-            // snapshot hash; the caller decodes to extract the tree.
-            *p
-        }
-        None => {
-            // Root snapshot: synth an empty-tree snap to subtract from.
-            // We don't need a snapshot, just an empty tree hash. Encode
-            // it directly — content-addressed dedup means we won't
-            // create a duplicate.
-            let empty_tree = ws.repo.put(&Tree::new().encode()?)?;
-            let synth = Snapshot {
-                parents: vec![],
-                tree: empty_tree,
-                author: principal(),
-                timestamp_ns: 0,
-                message: Some("(empty)".into()),
-                op_id: None,
-            };
-            ws.repo.put(&synth.encode()?)?
-        }
-    };
-    Ok((from, to))
+/// Walk the workspace's working directory, write blobs+trees into the
+/// object store, return the root tree hash. The same operation `tig
+/// snap` does pre-snapshot.
+///
+/// Side effect: blobs and trees end up in the object store. That's
+/// fine — content addressing means later snaps dedupe to them.
+fn scan_workdir(ws: &Workspace) -> Result<tig_core::Hash> {
+    Ok(tig_fs::scan(
+        ws.workdir(),
+        ws.repo.objects(),
+        &tig_fs::ScanOptions::default(),
+    )?)
 }
 
 fn cmd_diff(range: Option<&str>, no_hunks: bool, paths: &[String]) -> Result<()> {
     let ws = discover_workspace()?;
-    let (from_snap_hash, to_snap_hash) = resolve_diff_range(&ws, range)?;
-
-    // Both endpoints should be snapshots — validate the kind to give a
-    // clearer error than the decode failure.
-    for (label, h) in [("from", &from_snap_hash), ("to", &to_snap_hash)] {
-        let raw = ws.repo.get(h)?;
-        if raw.kind != ObjectKind::Snapshot {
-            return Err(anyhow!(
-                "{label} hash {} is a {}, not a snapshot",
-                &h.to_hex()[..12],
-                raw.kind.name()
-            ));
-        }
-    }
-
-    let from = Snapshot::decode(&ws.repo.get(&from_snap_hash)?)?;
-    let to = Snapshot::decode(&ws.repo.get(&to_snap_hash)?)?;
+    let (from_tree, to_tree, from_label, to_label) = resolve_diff_endpoints(&ws, range)?;
 
     let opts = DiffOptions {
         no_hunks,
         paths: paths.to_vec(),
         context_lines: 3,
     };
-    let diffs = diff_trees(&ws.repo, &from.tree, &to.tree, &opts)?;
+    let diffs = diff_trees(&ws.repo, &from_tree, &to_tree, &opts)?;
 
     if diffs.is_empty() {
-        println!(
-            "(no differences between {} and {})",
-            &from_snap_hash.to_hex()[..12],
-            &to_snap_hash.to_hex()[..12]
-        );
+        println!("(no differences: {from_label} == {to_label})");
         return Ok(());
     }
 
+    // Header: tell the user what's being compared. Useful especially
+    // when the to-side is the workdir (which can change second to
+    // second).
+    println!("# diff {from_label} -> {to_label}");
     for fd in &diffs {
         print_file_diff(fd);
     }
@@ -1110,6 +1228,7 @@ fn entry_kind_label(k: tig_core::EntryKind) -> &'static str {
 
 fn cmd_restore(snap_prefix: &str, force: bool) -> Result<()> {
     let mut ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
 
     // 1. Resolve the prefix to a full hash.
@@ -1257,6 +1376,7 @@ fn cmd_seal(
     inline_data: Option<&str>,
 ) -> Result<()> {
     let mut ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
     let store = PrincipalStore::open(ws.repo.root())?;
 
     // Resolve recipients.

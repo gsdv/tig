@@ -166,6 +166,7 @@ pub async fn create_change(
     headers: HeaderMap,
     Json(req): Json<CreateChangeReq>,
 ) -> ApiResult<(StatusCode, Json<ChangeView>)> {
+    let _lock = state.repo.lock_for_write()?;
     let caller = caller_from(&headers);
 
     // Determine the parent snapshot for the new change.
@@ -328,6 +329,7 @@ pub async fn patch_tree_path(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<Json<ChangeView>> {
+    let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
@@ -354,6 +356,7 @@ pub async fn delete_tree_path(
     Path((id, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> ApiResult<Json<ChangeView>> {
+    let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
@@ -383,6 +386,7 @@ pub async fn snap_change(
     headers: HeaderMap,
     Json(req): Json<SnapReq>,
 ) -> ApiResult<Json<SnapResp>> {
+    let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let change = load_mutable_change(&state, &id, &caller)?;
@@ -434,6 +438,7 @@ pub async fn transition_change(
     headers: HeaderMap,
     Json(req): Json<TransitionReq>,
 ) -> ApiResult<Json<ChangeView>> {
+    let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
     let caller = caller_from(&headers);
     let mut change = load_mutable_change(&state, &id, &caller)?;
@@ -652,6 +657,7 @@ pub async fn undo(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UndoReq>,
 ) -> ApiResult<Json<UndoResp>> {
+    let _lock = state.repo.lock_for_write()?;
     let actor = req.author.map(PrincipalId).unwrap_or_else(default_actor);
     let mut log = state.log.lock().await;
     let outcome = undo_once(&state.repo, &mut log, &actor)?;

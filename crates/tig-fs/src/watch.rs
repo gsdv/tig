@@ -122,7 +122,14 @@ pub fn watch_and_snap(
                     on_event(WatchEvent::Idle);
                     continue;
                 }
-                match snap_now(workspace, log, snap_opts) {
+                // Take the per-repo write lock for the duration of
+                // each snap — not the whole watch session — so other
+                // tig processes can still mutate between events.
+                let snap_result = match workspace.repo.lock_for_write() {
+                    Ok(_lock) => snap_now(workspace, log, snap_opts),
+                    Err(e) => Err(crate::Error::Store(e)),
+                };
+                match snap_result {
                     Ok(out) => on_event(WatchEvent::Snap(out)),
                     Err(e) => on_event(WatchEvent::Error(e.to_string())),
                 }

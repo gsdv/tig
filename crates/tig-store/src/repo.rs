@@ -10,16 +10,40 @@
 //! recording) can be added in one place.
 
 use crate::{Error, FsObjectStore, FsRefStore, ObjectStore, RefStore, Result};
+use fs4::fs_std::FileExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tig_core::{Change, ChangeId, Hash, RawObject};
 
 pub const TIG_DIR: &str = ".tig";
+pub const LOCK_FILE: &str = "lock";
 
 pub struct Repository {
     root: PathBuf,
     objects: FsObjectStore,
     refs: FsRefStore,
+}
+
+/// RAII guard for the per-repo write lock. Acquired by
+/// [`Repository::lock_for_write`]; released when dropped.
+///
+/// Behind the scenes this is an exclusive `flock(2)` on `<repo>/lock`
+/// (`LockFileEx` on Windows, via `fs4`). The OS releases the lock if
+/// the holding process dies — so a crashed writer doesn't deadlock
+/// future writers. Advisory locking applies per-FD: threads of the
+/// same process don't block each other on the same lock file, but
+/// separate processes do.
+pub struct WriteGuard {
+    // Holding the File alive keeps the flock held. Drop releases it.
+    _file: fs::File,
+}
+
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        // fs4 releases the lock when the File is closed (drop). We
+        // could call `unlock()` explicitly but the implicit release on
+        // drop is equivalent and avoids a fallible step in Drop.
+    }
 }
 
 impl Repository {
@@ -140,6 +164,51 @@ impl Repository {
 
     pub fn set_head(&self, id: &ChangeId) -> Result<()> {
         self.refs.set_head(id)
+    }
+
+    // --- multi-process write locking ----------------------------------
+
+    fn lock_file_path(&self) -> PathBuf {
+        self.root.join(LOCK_FILE)
+    }
+
+    /// Acquire the per-repo exclusive write lock, blocking until
+    /// available. Hold the returned guard for the duration of any
+    /// state-changing operation — snap, change creation, transition,
+    /// undo, workspace make/drop, sealed-value writes.
+    ///
+    /// The lock serializes writers across processes; without it, two
+    /// concurrent `tig snap` invocations can produce torn op-log
+    /// records or duplicate op ids. Reads don't take this lock;
+    /// individual writes are atomic via tempfile-rename, so readers
+    /// either see the old or new state but never a half-written one.
+    pub fn lock_for_write(&self) -> Result<WriteGuard> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.lock_file_path())?;
+        file.lock_exclusive()?;
+        Ok(WriteGuard { _file: file })
+    }
+
+    /// Non-blocking variant. Returns `Ok(None)` if another process
+    /// already holds the lock. Useful for "is anyone else writing
+    /// right now?" probes; the daemon doesn't use this — it always
+    /// wants to wait.
+    pub fn try_lock_for_write(&self) -> Result<Option<WriteGuard>> {
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(self.lock_file_path())?;
+        match file.try_lock_exclusive() {
+            Ok(true) => Ok(Some(WriteGuard { _file: file })),
+            Ok(false) => Ok(None),
+            Err(e) => Err(Error::Io(e)),
+        }
     }
 }
 

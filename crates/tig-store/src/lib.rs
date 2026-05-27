@@ -25,7 +25,7 @@ pub use oplog::{
     OpLog, RefSnapshot, UndoOutcome,
 };
 pub use refs::{FsRefStore, RefStore};
-pub use repo::{Repository, TIG_DIR};
+pub use repo::{Repository, WriteGuard, LOCK_FILE, TIG_DIR};
 pub use workspace::{
     read_marker, write_marker, Workspace, WorkspaceId, WorkspaceKind, WorkspaceManifest,
     WorkspaceMarker, WorkspaceStore, DEFAULT_WORKTREE_DIR, MARKER_FILE,
