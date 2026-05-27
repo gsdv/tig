@@ -11,11 +11,11 @@ use tig_core::{
     Blob, Change, ChangeState, Encodable, ObjectKind, PrincipalId, Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    blame_at, detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
+    blame_at, detect_clone_engine, diff_trees, grep_tree, lookup_entry, materialize_change_into,
     materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now, watch_and_snap,
-    write_sealed_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions, FileDiff, HunkLine,
-    MaterializeOptions, MaterializeOutcome, OnUnsealable, RestoreOptions, SnapOptions, SnapOutcome,
-    WatchEvent, WatchOptions,
+    write_sealed_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions, FileDiff,
+    GrepOptions, HunkLine, MaterializeOptions, MaterializeOutcome, OnUnsealable, RestoreOptions,
+    SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
 };
 use tig_store::{
     collect_garbage, undo_once, workspace_ref_snapshot, write_marker, GcOptions, OpInProgress,
@@ -178,6 +178,36 @@ enum Cmd {
         snap: Option<String>,
     },
 
+    /// Pattern search across the files of a snapshot's tree. Output
+    /// is `path:line_number:line`, one match per line. Skips binary
+    /// files, sealed entries, and the conflict/submodule kinds.
+    ///
+    /// Defaults to literal substring matching. Pass `-E` / `--regex`
+    /// for a Rust-`regex` expression.
+    Grep {
+        /// The pattern to search for.
+        pattern: String,
+        /// Snap prefix to search at. Defaults to the workspace's
+        /// current snap.
+        #[arg(long, value_name = "SNAP")]
+        snap: Option<String>,
+        /// Treat the pattern as a regex.
+        #[arg(short = 'E', long)]
+        regex: bool,
+        /// Case-insensitive match.
+        #[arg(short = 'i', long = "ignore-case")]
+        ignore_case: bool,
+        /// Path-prefix filter. Repeatable.
+        #[arg(long = "path", value_name = "PREFIX")]
+        path: Vec<String>,
+        /// Cap matches per file.
+        #[arg(long, value_name = "N")]
+        max_per_file: Option<usize>,
+        /// Cap total matches.
+        #[arg(long, value_name = "N")]
+        max_total: Option<usize>,
+    },
+
     /// Print any object by its hash. Useful for debugging.
     CatObject { hash: String },
 
@@ -313,6 +343,23 @@ fn run(cli: Cli) -> Result<()> {
             r#as,
         } => cmd_restore(&snap_prefix, force, r#as.as_deref()),
         Cmd::Blame { path, snap } => cmd_blame(&path, snap.as_deref()),
+        Cmd::Grep {
+            pattern,
+            snap,
+            regex,
+            ignore_case,
+            path,
+            max_per_file,
+            max_total,
+        } => cmd_grep(
+            &pattern,
+            snap.as_deref(),
+            regex,
+            ignore_case,
+            &path,
+            max_per_file,
+            max_total,
+        ),
         Cmd::AuthToken { r#as, ttl } => cmd_auth_token(r#as.as_deref(), ttl),
         Cmd::Wt(WtCmd::Make { name, at, r#as }) => {
             cmd_wt_make(&name, at.as_deref(), r#as.as_deref())
@@ -1475,6 +1522,60 @@ fn print_blame_line(b: &BlameLine, line_no: usize, n_width: usize, author_width:
         width = n_width,
         content = b.line,
     );
+}
+
+// --- grep ---------------------------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_grep(
+    pattern: &str,
+    snap_arg: Option<&str>,
+    regex: bool,
+    ignore_case: bool,
+    paths: &[String],
+    max_per_file: Option<usize>,
+    max_total: Option<usize>,
+) -> Result<()> {
+    let ws = discover_workspace()?;
+
+    // Resolve target snap: arg or current.
+    let target = match snap_arg {
+        Some(p) => ws.repo.resolve_hash_prefix(p)?,
+        None => {
+            let id = ws
+                .current_change_id()?
+                .ok_or_else(|| anyhow!("no current change to grep against"))?;
+            ws.repo.get_change(&id)?.current
+        }
+    };
+
+    let raw = ws.repo.get(&target)?;
+    if raw.kind != ObjectKind::Snapshot {
+        return Err(anyhow!(
+            "{} is a {}, not a snapshot",
+            &target.to_hex()[..12],
+            raw.kind.name()
+        ));
+    }
+    let snap = Snapshot::decode(&raw)?;
+
+    let opts = GrepOptions {
+        regex,
+        ignore_case,
+        paths: paths.to_vec(),
+        max_matches_per_file: max_per_file,
+        max_total_matches: max_total,
+    };
+    let hits = grep_tree(&ws.repo, &snap.tree, pattern, &opts)?;
+    if hits.is_empty() {
+        // Exit code 1 for "no matches", matching grep's convention.
+        // Don't print anything — that's also what grep does.
+        std::process::exit(1);
+    }
+    for m in &hits {
+        println!("{}:{}:{}", m.path, m.line_number, m.line);
+    }
+    Ok(())
 }
 
 // --- restore -------------------------------------------------------------

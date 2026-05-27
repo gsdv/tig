@@ -14,6 +14,7 @@ pub mod blame;
 pub mod clone;
 pub mod diff;
 pub mod error;
+pub mod grep;
 pub mod materialize;
 pub mod restore;
 pub mod scan;
@@ -29,6 +30,7 @@ pub use diff::{
     blob_diff_hunks, diff_trees, is_binary, ChangeKind, DiffOptions, FileDiff, Hunk, HunkLine,
 };
 pub use error::Error;
+pub use grep::{grep_tree, GrepMatch, GrepOptions};
 pub use materialize::{
     collect_sealed_paths, materialize_change_into, materialize_from_workspace, render_tree_into,
     MaterializeOptions, MaterializeOutcome, OnUnsealable, RenderStats, UnsealFn,

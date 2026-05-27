@@ -13,6 +13,7 @@ thiserror.workspace = true
 notify = "8"
 notify-debouncer-full = "0.6"
 similar = "2"
+regex.workspace = true
 serde.workspace = true
 
 [dev-dependencies]

@@ -21,14 +21,15 @@ use tig_core::{
     Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    blame_at, delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path,
+    blame_at, delete_at_path, diff_trees, grep_tree, list_tree, lookup_entry, read_blob_at_path,
     snap_change_directly, write_blob_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions,
-    FileDiff, Hunk, HunkLine, SnapOptions, SnapOutcome,
+    FileDiff, GrepMatch, GrepOptions, Hunk, HunkLine, SnapOptions, SnapOutcome,
 };
 use tig_protocol::{
     BlameLineView, BlameQuery, BlameView, ChangeView, CreateChangeReq, DiffQuery, DiffView,
-    ErrorResp, FileDiffView, GcReq, GcView, HealthView, HunkLineView, HunkView, OpView, SealedView,
-    SnapReq, SnapResp, SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
+    ErrorResp, FileDiffView, GcReq, GcView, GrepMatchView, GrepQuery, GrepView, HealthView,
+    HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView, TransitionReq,
+    TreeView, UndoReq, UndoResp,
 };
 use tig_store::{collect_garbage, undo_once, GcOptions, Op, OpInProgress, OpKind, RefSnapshot};
 use tig_vis::{peek_claims, verify_token, PrincipalStore};
@@ -856,6 +857,61 @@ pub async fn undo(
             message: "nothing to undo".into(),
         },
     }))
+}
+
+// --- grep ----------------------------------------------------------------
+
+/// `GET /v1/changes/{id}/grep?q=...&regex=...&ignore_case=...&snap=...&paths=...`
+///
+/// Pattern search across a snapshot's tree. Visibility-gated: change
+/// must be visible; if a snap is specified it must be reachable from
+/// at least one visible change — same gate as `/diff` and `/blame`.
+/// The default snap is the change's `current`.
+pub async fn grep_change(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<GrepQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Json<GrepView>> {
+    let id = parse_change_id(&id)?;
+    let caller = caller_from(&state, &headers)?;
+    let change = load_visible_change(&state, &id, &caller)?;
+
+    let at_hash = match &q.snap {
+        Some(s) => parse_hash(s)?,
+        None => change.current,
+    };
+    // Reachability gate: a leaked snap hash mustn't grant grep access
+    // across the visibility boundary.
+    let visible = visible_snapshot_set(&state, &caller)?;
+    if !visible.contains(&at_hash) {
+        return Err(ApiError::NotFound(format!(
+            "snapshot {} not visible",
+            &at_hash.to_hex()[..12]
+        )));
+    }
+
+    let snap = Snapshot::decode(&state.repo.get(&at_hash)?).map_err(ApiError::from)?;
+    let opts = GrepOptions {
+        regex: q.regex,
+        ignore_case: q.ignore_case,
+        paths: q.parsed_paths(),
+        max_matches_per_file: q.max_per_file,
+        max_total_matches: q.max_total,
+    };
+    let matches = grep_tree(&state.repo, &snap.tree, &q.q, &opts)?;
+    Ok(Json(GrepView {
+        at: at_hash.to_hex(),
+        matches: matches.iter().map(grep_match_view).collect(),
+    }))
+}
+
+fn grep_match_view(m: &GrepMatch) -> GrepMatchView {
+    GrepMatchView {
+        path: m.path.clone(),
+        line_number: m.line_number,
+        line: m.line.clone(),
+    }
 }
 
 // --- gc ------------------------------------------------------------------

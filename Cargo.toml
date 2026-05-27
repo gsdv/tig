@@ -58,6 +58,9 @@ clap = { version = "4", features = ["derive"] }
 # fs
 walkdir = "2"
 
+# pattern matching
+regex = "1"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

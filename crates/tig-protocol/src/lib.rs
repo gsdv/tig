@@ -386,6 +386,67 @@ pub struct BlameQuery {
     pub snap: Option<String>,
 }
 
+// --- grep (wire shape) --------------------------------------------------
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GrepQuery {
+    /// The pattern to search for. Required.
+    pub q: String,
+    /// Treat `q` as a regex (default: literal substring).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub regex: bool,
+    /// Case-insensitive matching.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_case: bool,
+    /// Snapshot hash (hex) to search at. Defaults to the change's
+    /// current snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<String>,
+    /// Comma-separated path-prefix filter. Empty / absent = no
+    /// filter. Comma-separated rather than repeated because axum's
+    /// `Query<T>` via `serde_urlencoded` doesn't decode `Vec<T>`
+    /// from repeated keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paths: Option<String>,
+    /// Cap matches per file. None = no cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_per_file: Option<usize>,
+    /// Cap total matches across the whole tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total: Option<usize>,
+}
+
+impl GrepQuery {
+    /// Parse the comma-separated `paths` field into the list shape
+    /// the engine expects. Empty strings between commas are dropped.
+    pub fn parsed_paths(&self) -> Vec<String> {
+        self.paths
+            .as_deref()
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GrepView {
+    /// Hex hash of the snapshot the matches were computed against.
+    pub at: String,
+    pub matches: Vec<GrepMatchView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GrepMatchView {
+    pub path: String,
+    pub line_number: usize,
+    pub line: String,
+}
+
 // --- garbage collection (wire shape) ------------------------------------
 
 /// Body for `POST /v1/gc`. Both fields default to safe values so a

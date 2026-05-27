@@ -19,6 +19,7 @@
 //! DELETE /v1/changes/{id}/tree/{*path}          remove entry
 //! POST   /v1/changes/{id}/snap                  build a snapshot
 //! GET    /v1/snapshots/{hash}                   fetch a snapshot object
+//! GET    /v1/changes/{id}/grep                  pattern search in snap tree
 //! GET    /v1/oplog                              list ops, newest last
 //! POST   /v1/oplog/undo                         rewind one op
 //! POST   /v1/gc                                 collect garbage (auth required)
@@ -66,6 +67,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/changes/{id}/snap", post(handlers::snap_change))
         .route("/v1/changes/{id}/diff", get(handlers::diff_change))
         .route("/v1/changes/{id}/blame/{*path}", get(handlers::blame_path))
+        .route("/v1/changes/{id}/grep", get(handlers::grep_change))
         .route(
             "/v1/changes/{id}/transition",
             post(handlers::transition_change),
