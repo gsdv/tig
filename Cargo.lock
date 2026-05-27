@@ -1804,6 +1804,7 @@ dependencies = [
  "thiserror",
  "tig-core",
  "tig-store",
+ "tig-vis",
  "walkdir",
 ]
 

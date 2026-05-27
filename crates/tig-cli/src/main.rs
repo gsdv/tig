@@ -14,7 +14,8 @@ use tig_fs::{
     blame_at, detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
     materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now, watch_and_snap,
     write_sealed_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions, FileDiff, HunkLine,
-    MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
+    MaterializeOptions, MaterializeOutcome, OnUnsealable, RestoreOptions, SnapOptions, SnapOutcome,
+    WatchEvent, WatchOptions,
 };
 use tig_store::{
     collect_garbage, undo_once, workspace_ref_snapshot, write_marker, GcOptions, OpInProgress,
@@ -146,6 +147,11 @@ enum Cmd {
         /// the workdir doesn't match the current snapshot's tree.
         #[arg(long)]
         force: bool,
+        /// Identity to decrypt sealed entries with. Falls back to
+        /// `$TIG_AS`. Without it, a target tree containing any sealed
+        /// entries is refused.
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
     },
 
     /// Mint a signed bearer token for the daemon. Print the token
@@ -251,6 +257,13 @@ enum WtCmd {
         /// Where to put it. Default: `<current-workdir>/.tig-worktrees/<name>`.
         #[arg(long)]
         at: Option<PathBuf>,
+        /// Identity to decrypt sealed entries with. Falls back to
+        /// `$TIG_AS`. When set, the donor-clone fast path is skipped
+        /// so that sealed entries are always decrypted from the
+        /// canonical objects rather than copied from whatever a donor
+        /// happens to hold on disk.
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
     },
     /// List every workspace known to this repo.
     List,
@@ -294,10 +307,16 @@ fn run(cli: Cli) -> Result<()> {
             no_hunks,
             path,
         } => cmd_diff(range.as_deref(), no_hunks, &path),
-        Cmd::Restore { snap_prefix, force } => cmd_restore(&snap_prefix, force),
+        Cmd::Restore {
+            snap_prefix,
+            force,
+            r#as,
+        } => cmd_restore(&snap_prefix, force, r#as.as_deref()),
         Cmd::Blame { path, snap } => cmd_blame(&path, snap.as_deref()),
         Cmd::AuthToken { r#as, ttl } => cmd_auth_token(r#as.as_deref(), ttl),
-        Cmd::Wt(WtCmd::Make { name, at }) => cmd_wt_make(&name, at.as_deref()),
+        Cmd::Wt(WtCmd::Make { name, at, r#as }) => {
+            cmd_wt_make(&name, at.as_deref(), r#as.as_deref())
+        }
         Cmd::Wt(WtCmd::List) => cmd_wt_list(),
         Cmd::Wt(WtCmd::Drop { name, keep_files }) => cmd_wt_drop(&name, keep_files),
         Cmd::Undo => cmd_undo(),
@@ -374,6 +393,28 @@ fn now_ns() -> u64 {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+/// Look up the named identity (or `$TIG_AS`) in the principal store
+/// and return its X25519 secret. Returns `Ok(None)` if neither was
+/// supplied. Errors if the name was given but missing/keyless.
+fn resolve_unseal_identity(
+    repo: &Repository,
+    as_name: Option<&str>,
+) -> Result<Option<tig_vis::SecretKey>> {
+    let name = match as_name
+        .map(String::from)
+        .or_else(|| std::env::var("TIG_AS").ok())
+    {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    let store = PrincipalStore::open(repo.root())?;
+    let identity = store.get(&name)?;
+    let secret = identity
+        .secret()
+        .with_context(|| format!("identity {name:?} has no local sealing secret"))?;
+    Ok(Some(secret))
 }
 
 // --- commands -------------------------------------------------------------
@@ -698,7 +739,7 @@ fn cmd_change_list() -> Result<()> {
 
 // --- workspace commands --------------------------------------------------
 
-fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
+fn cmd_wt_make(name: &str, at: Option<&Path>, as_name: Option<&str>) -> Result<()> {
     if !is_valid_workspace_name(name) {
         return Err(anyhow!(
             "invalid workspace name: {name:?} (no '/', '..', or empty)"
@@ -720,10 +761,24 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
         return Err(anyhow!("destination already exists: {}", dest.display()));
     }
 
-    // Look for an existing workspace with the same change — the donor
-    // gives us the CoW fast path. The current workspace itself is a
-    // valid donor; check it first.
-    let donor = pick_donor(&source, &source_change)?;
+    // Resolve the optional `--as` identity into an X25519 secret. We
+    // build the closure here so it borrows the secret for the
+    // duration of materialize.
+    let identity_secret = resolve_unseal_identity(&source.repo, as_name)?;
+    let unsealer_closure = identity_secret.as_ref().map(|secret| {
+        move |sealed: &tig_core::Sealed, aad: &[u8]| -> std::result::Result<Vec<u8>, String> {
+            do_unseal(sealed, secret, aad).map_err(|e| e.to_string())
+        }
+    });
+
+    // With `--as`, force the render path so sealed entries get
+    // decrypted from the canonical objects. Without `--as`, prefer
+    // the donor-clone fast path when available.
+    let donor = if unsealer_closure.is_some() {
+        None
+    } else {
+        pick_donor(&source, &source_change)?
+    };
 
     // Make parent directories so `dest` itself can be created by the
     // materializer.
@@ -741,8 +796,24 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
         }
         None => {
             let change = source.repo.get_change(&source_change)?;
-            let outcome = materialize_change_into(&source.repo, &change.current, &dest)?;
-            println!("  rendered from objects (no donor workspace available)");
+            let opts = MaterializeOptions {
+                unsealer: unsealer_closure
+                    .as_ref()
+                    .map(|c| c as &tig_fs::UnsealFn<'_>),
+                on_unsealable: OnUnsealable::Error,
+            };
+            let outcome = materialize_change_into(&source.repo, &change.current, &dest, &opts)?;
+            if unsealer_closure.is_some() {
+                println!(
+                    "  rendered from objects, decrypting sealed entries as {}",
+                    as_name
+                        .map(String::from)
+                        .or_else(|| std::env::var("TIG_AS").ok())
+                        .unwrap_or_else(|| "?".into())
+                );
+            } else {
+                println!("  rendered from objects (no donor workspace available)");
+            }
             outcome
         }
     };
@@ -791,7 +862,12 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
                 manifest.location.display()
             );
         }
-        MaterializeOutcome::Rendered { files, bytes } => {
+        MaterializeOutcome::Rendered {
+            files,
+            bytes,
+            sealed_unsealed,
+            ..
+        } => {
             println!(
                 "  workspace {} ({}) ready at {} [{} files, {} bytes]",
                 manifest.name,
@@ -800,6 +876,14 @@ fn cmd_wt_make(name: &str, at: Option<&Path>) -> Result<()> {
                 files,
                 bytes
             );
+            if sealed_unsealed > 0 {
+                eprintln!(
+                    "  note: {sealed_unsealed} sealed entr{} decrypted to plaintext on disk. \
+                     Re-seal before snap with `tig seal <path> --recipients ...` \
+                     or the next snap will store them as regular blobs.",
+                    if sealed_unsealed == 1 { "y" } else { "ies" }
+                );
+            }
         }
     }
     Ok(())
@@ -1395,7 +1479,7 @@ fn print_blame_line(b: &BlameLine, line_no: usize, n_width: usize, author_width:
 
 // --- restore -------------------------------------------------------------
 
-fn cmd_restore(snap_prefix: &str, force: bool) -> Result<()> {
+fn cmd_restore(snap_prefix: &str, force: bool, as_name: Option<&str>) -> Result<()> {
     let mut ws = discover_workspace()?;
     let _lock = ws.repo.lock_for_write()?;
     let mut log = OpLog::open(ws.repo.root())?;
@@ -1423,16 +1507,45 @@ fn cmd_restore(snap_prefix: &str, force: bool) -> Result<()> {
         .ok_or_else(|| anyhow!("no current change; nothing to restore into"))?;
     let current_change = ws.repo.get_change(&current_change_id)?;
 
-    // 3. Render. The engine refuses on dirty workdir unless force is on,
-    //    and refuses on sealed entries unconditionally.
+    // 3. Render. The engine refuses on dirty workdir unless force is
+    //    on, and refuses on sealed entries when no --as identity was
+    //    supplied (else they get decrypted in place).
+    let identity_secret = resolve_unseal_identity(&ws.repo, as_name)?;
+    let unsealer_closure = identity_secret.as_ref().map(|secret| {
+        move |sealed: &tig_core::Sealed, aad: &[u8]| -> std::result::Result<Vec<u8>, String> {
+            do_unseal(sealed, secret, aad).map_err(|e| e.to_string())
+        }
+    });
+
     let workdir = ws.workdir().to_path_buf();
     let outcome = restore_tree_into(
         &ws.repo,
         &target_hash,
         &workdir,
         &current_change.current,
-        &RestoreOptions { force },
+        &RestoreOptions {
+            force,
+            materialize: MaterializeOptions {
+                unsealer: unsealer_closure
+                    .as_ref()
+                    .map(|c| c as &tig_fs::UnsealFn<'_>),
+                on_unsealable: OnUnsealable::Error,
+            },
+        },
     )?;
+    if outcome.render.sealed_unsealed > 0 {
+        eprintln!(
+            "  note: {} sealed entr{} decrypted to plaintext on disk. \
+             Re-seal before snap with `tig seal <path> --recipients ...` \
+             or the next snap will store them as regular blobs.",
+            outcome.render.sealed_unsealed,
+            if outcome.render.sealed_unsealed == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+        );
+    }
 
     println!(
         "  restored {} files ({} bytes), removed {} top-level entries",

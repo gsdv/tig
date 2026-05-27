@@ -31,7 +31,7 @@ pub use diff::{
 pub use error::Error;
 pub use materialize::{
     collect_sealed_paths, materialize_change_into, materialize_from_workspace, render_tree_into,
-    MaterializeOutcome, RenderStats,
+    MaterializeOptions, MaterializeOutcome, OnUnsealable, RenderStats, UnsealFn,
 };
 pub use restore::{restore_tree_into, RestoreOptions, RestoreOutcome};
 pub use scan::{scan, ScanOptions};

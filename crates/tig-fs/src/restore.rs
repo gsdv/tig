@@ -13,13 +13,14 @@
 //! edits. Use `--force` to override.
 //!
 //! Sealed entries: the architecture spec says sealed reads happen
-//! client-side with explicit identities. A blanket `tig restore` has no
-//! identity context to decrypt with, so we refuse to render a tree
-//! containing `Sealed` entries and ask the user to seal/unseal them
-//! explicitly. (Future: `tig restore --as alice` could decrypt-as-it-renders.)
+//! client-side with explicit identities. The default `restore` carries
+//! no identity, so a tree containing `Sealed` entries is refused with
+//! a clear message. Pass an unsealer via
+//! [`RestoreOptions::materialize`] (typically built by the CLI from
+//! `--as <name>`) to decrypt-as-it-renders.
 
 use crate::{
-    materialize::{collect_sealed_paths, render_tree_into, RenderStats},
+    materialize::{collect_sealed_paths, render_tree_into, MaterializeOptions, RenderStats},
     scan, Error, Result, ScanOptions,
 };
 use std::fs;
@@ -27,12 +28,20 @@ use std::path::Path;
 use tig_core::{Encodable, Hash, Snapshot};
 use tig_store::Repository;
 
-#[derive(Clone, Debug, Default)]
-pub struct RestoreOptions {
+#[derive(Default)]
+pub struct RestoreOptions<'a> {
     /// Force the restore even if the workdir is dirty (has uncommitted
     /// changes vs. the current snapshot). Without this, restore refuses
     /// rather than silently overwriting work.
     pub force: bool,
+    /// Materialization knobs — most importantly the unsealer. Restore
+    /// no longer pre-checks for sealed entries; if your tree contains
+    /// any and `materialize.unsealer` is `None`, the render step will
+    /// error after the workdir has been cleared. To get the friendly
+    /// "refuse cleanly without touching anything" behaviour, pass
+    /// `RestoreOptions::default()` (the legacy contract) — the
+    /// pre-check is still applied when no unsealer is configured.
+    pub materialize: MaterializeOptions<'a>,
 }
 
 #[derive(Clone, Debug)]
@@ -66,21 +75,25 @@ pub fn restore_tree_into(
     target_snapshot: &Hash,
     workdir: &Path,
     current_snapshot: &Hash,
-    opts: &RestoreOptions,
+    opts: &RestoreOptions<'_>,
 ) -> Result<RestoreOutcome> {
     let target = Snapshot::decode(&repo.get(target_snapshot)?).map_err(Error::Core)?;
 
-    // Step 1: refuse sealed entries up-front.
-    let sealed = collect_sealed_paths(repo, &target.tree)?;
-    if !sealed.is_empty() {
-        return Err(Error::Core(tig_core::Error::Decode(format!(
-            "refusing to restore: target tree contains {} sealed entr{}; \
-             reveal them with `tig reveal` first or use a future `tig restore --as <id>`. \
-             paths: {}",
-            sealed.len(),
-            if sealed.len() == 1 { "y" } else { "ies" },
-            sealed.join(", ")
-        ))));
+    // Step 1: refuse sealed entries up-front *only* when the caller
+    // has no unsealer. With an unsealer, the render step decrypts
+    // them; without one, fail before we touch anything on disk so the
+    // workdir isn't half-cleared.
+    if opts.materialize.unsealer.is_none() {
+        let sealed = collect_sealed_paths(repo, &target.tree)?;
+        if !sealed.is_empty() {
+            return Err(Error::Core(tig_core::Error::Decode(format!(
+                "refusing to restore: target tree contains {} sealed entr{}; \
+                 pass `--as <identity>` to decrypt them. paths: {}",
+                sealed.len(),
+                if sealed.len() == 1 { "y" } else { "ies" },
+                sealed.join(", ")
+            ))));
+        }
     }
 
     // Step 2: dirty-check.
@@ -103,7 +116,7 @@ pub fn restore_tree_into(
     let removed = clear_workdir(workdir)?;
 
     // Step 4: render the target tree into the now-empty workdir.
-    let render = render_tree_into(repo, &target.tree, workdir)?;
+    let render = render_tree_into(repo, &target.tree, workdir, &opts.materialize)?;
 
     Ok(RestoreOutcome {
         tree: target.tree,
@@ -231,7 +244,10 @@ mod tests {
             &v1,
             ws.workdir(),
             &v2,
-            &RestoreOptions { force: false },
+            &RestoreOptions {
+                force: false,
+                ..Default::default()
+            },
         )
         .unwrap_err();
         assert!(err.to_string().contains("uncommitted"), "got: {err}");
@@ -249,7 +265,10 @@ mod tests {
             &v1,
             ws.workdir(),
             &v2,
-            &RestoreOptions { force: true },
+            &RestoreOptions {
+                force: true,
+                ..Default::default()
+            },
         )
         .unwrap();
         assert_eq!(fs::read(dir.path().join("a")).unwrap(), b"alpha");
@@ -299,7 +318,10 @@ mod tests {
             &snap_h,
             ws.workdir(),
             &v2,
-            &RestoreOptions { force: true }, // force on, but sealed check fires first
+            &RestoreOptions {
+                force: true, // force on, but sealed check fires first
+                ..Default::default()
+            },
         )
         .unwrap_err();
         let msg = err.to_string();
@@ -311,6 +333,68 @@ mod tests {
         // The "a" file (from v2) must still be there — sealed check fired before clearing.
         assert!(dir.path().join("a").exists());
         assert!(dir.path().join("b").exists());
+    }
+
+    #[test]
+    fn restore_with_unsealer_decrypts_sealed_entries() {
+        // Same fixture as the refuses test, but this time we hand
+        // restore an unsealer closure. The sealed path materializes
+        // as plaintext.
+        let (dir, ws, _log, _v1, v2) = fixture_two_snaps();
+        let sealed = Sealed {
+            algo: SealAlgo::X25519XChaCha20Poly1305,
+            ephemeral_pk: vec![0u8; 32],
+            recipients: vec![RecipientWrap {
+                recipient_pk: vec![1u8; 32],
+                wrapped_key: vec![2u8; 48],
+                wrap_nonce: vec![3u8; 24],
+            }],
+            ciphertext: vec![9u8; 64],
+            nonce: vec![4u8; 24],
+            aad: b"secret".to_vec(),
+        };
+        let sealed_h = ws.repo.put(&sealed.encode().unwrap()).unwrap();
+        let tree = Tree::from_entries([TreeEntry {
+            name: "secret".into(),
+            kind: EntryKind::Sealed,
+            target: sealed_h,
+            mode: FileMode::REGULAR,
+            vis: None,
+        }])
+        .unwrap();
+        let tree_h = ws.repo.put(&tree.encode().unwrap()).unwrap();
+        let snap = Snapshot {
+            parents: vec![v2],
+            tree: tree_h,
+            author: PrincipalId::local("t"),
+            timestamp_ns: Snapshot::current_timestamp_ns(),
+            message: Some("with-sealed".into()),
+            op_id: None,
+        };
+        let snap_h = ws.repo.put(&snap.encode().unwrap()).unwrap();
+
+        let unsealer = |_s: &Sealed, _aad: &[u8]| -> std::result::Result<Vec<u8>, String> {
+            Ok(b"SHHH".to_vec())
+        };
+        let outcome = restore_tree_into(
+            &ws.repo,
+            &snap_h,
+            ws.workdir(),
+            &v2,
+            &RestoreOptions {
+                force: true,
+                materialize: crate::MaterializeOptions {
+                    unsealer: Some(&unsealer),
+                    on_unsealable: crate::OnUnsealable::Error,
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.render.sealed_unsealed, 1);
+        assert_eq!(fs::read(dir.path().join("secret")).unwrap(), b"SHHH");
+        // The v2 files were cleared.
+        assert!(!dir.path().join("a").exists());
+        assert!(!dir.path().join("b").exists());
     }
 
     #[test]

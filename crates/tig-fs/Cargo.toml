@@ -17,3 +17,4 @@ serde.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+tig-vis.workspace = true
