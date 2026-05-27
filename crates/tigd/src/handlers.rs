@@ -652,10 +652,7 @@ pub async fn undo(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UndoReq>,
 ) -> ApiResult<Json<UndoResp>> {
-    let actor = req
-        .author
-        .map(PrincipalId)
-        .unwrap_or_else(default_actor);
+    let actor = req.author.map(PrincipalId).unwrap_or_else(default_actor);
     let mut log = state.log.lock().await;
     let outcome = undo_once(&state.repo, &mut log, &actor)?;
     Ok(Json(match outcome {

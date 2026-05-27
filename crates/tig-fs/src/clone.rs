@@ -179,20 +179,31 @@ impl CloneEngine for CopyFallback {
     }
 
     fn clone_path(&self, src: &Path, dst: &Path) -> io::Result<()> {
-        copy_recursive(src, dst)
+        copy_recursive(src, dst, /* top_level */ true)
     }
 }
 
-fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+fn copy_recursive(src: &Path, dst: &Path, top_level: bool) -> io::Result<()> {
     let meta = fs::symlink_metadata(src)?;
     let ft = meta.file_type();
+
+    // CloneEngine contract: `dst` must not exist. APFS clonefile enforces
+    // this with EEXIST; the recursive copier has to enforce it itself.
+    // We only check at the top of the recursion: inside a freshly-created
+    // subdir, none of its children can possibly pre-exist.
+    if top_level && fs::symlink_metadata(dst).is_ok() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", dst.display()),
+        ));
+    }
 
     if ft.is_dir() {
         fs::create_dir(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
             let name = entry.file_name();
-            copy_recursive(&entry.path(), &dst.join(name))?;
+            copy_recursive(&entry.path(), &dst.join(name), false)?;
         }
         Ok(())
     } else if ft.is_symlink() {

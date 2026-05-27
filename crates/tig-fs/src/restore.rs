@@ -27,15 +27,13 @@ use std::path::Path;
 use tig_core::{Encodable, Hash, Snapshot};
 use tig_store::Repository;
 
-#[derive(Clone, Debug)]
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RestoreOptions {
     /// Force the restore even if the workdir is dirty (has uncommitted
     /// changes vs. the current snapshot). Without this, restore refuses
     /// rather than silently overwriting work.
     pub force: bool,
 }
-
 
 #[derive(Clone, Debug)]
 pub struct RestoreOutcome {

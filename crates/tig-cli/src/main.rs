@@ -668,11 +668,10 @@ fn cmd_wt_drop(name: &str, keep_files: bool) -> Result<()> {
         ));
     }
 
-    if !keep_files
-        && target.location.exists() {
-            std::fs::remove_dir_all(&target.location)
-                .with_context(|| format!("removing {}", target.location.display()))?;
-        }
+    if !keep_files && target.location.exists() {
+        std::fs::remove_dir_all(&target.location)
+            .with_context(|| format!("removing {}", target.location.display()))?;
+    }
     let target_snapshot = target.clone();
     store.delete(&target.id)?;
 
