@@ -30,7 +30,7 @@ use tig_protocol::{
     HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView, TransitionReq,
     TreeView, UndoReq, UndoResp,
 };
-use tig_store::{undo_once, OpInProgress, OpKind, RefSnapshot};
+use tig_store::{undo_once, Op, OpInProgress, OpKind, RefSnapshot};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
@@ -109,6 +109,69 @@ fn visible_snapshot_set(
         }
     }
     Ok(out)
+}
+
+/// Pull every `ChangeId` an op references — via its `Head`, `Change`,
+/// or `Workspace`-with-manifest RefSnapshots in before+after. Used by
+/// `is_op_visible` to decide whether the op leaks anything the caller
+/// shouldn't see.
+///
+/// Note: `Workspace` refs reference a change indirectly through their
+/// manifest's `change_id`. A WtMake/WtDrop op for a workspace targeting
+/// a hidden draft must itself be redacted, since the manifest's
+/// `change_id` is otherwise leakable through the RefSnapshot.
+fn referenced_change_ids(op: &Op) -> Vec<tig_core::ChangeId> {
+    let mut out = Vec::new();
+    for snap in op.before.iter().chain(op.after.iter()) {
+        match snap {
+            RefSnapshot::Change { id, .. } => out.push(id.clone()),
+            RefSnapshot::Head(Some(id)) => out.push(id.clone()),
+            RefSnapshot::Workspace { value: Some(m), .. } => out.push(m.change_id.clone()),
+            _ => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Decide whether `caller` is allowed to see this op un-redacted.
+///
+/// Conservative rule: visible iff *every* change the op references is
+/// visible to the caller. If any referenced change is hidden — or has
+/// been deleted (NotFound) — we redact the whole op rather than risk
+/// leaking through partial disclosure (the op's `before`/`after` carry
+/// full Change records, snapshot hashes, descriptions).
+fn is_op_visible(state: &AppState, op: &Op, caller: &PrincipalId) -> ApiResult<bool> {
+    for id in referenced_change_ids(op) {
+        match state.repo.get_change(&id) {
+            Ok(c) => {
+                if !can_see(&c.visibility, &c.author, Some(caller)) {
+                    return Ok(false);
+                }
+            }
+            // Change was deleted (e.g. an undo of ChangeNew). We can't
+            // re-evaluate its visibility, so play it safe and redact.
+            Err(tig_store::Error::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(ApiError::from(e)),
+        }
+    }
+    Ok(true)
+}
+
+/// The redacted form an op takes on the wire when the caller isn't
+/// allowed to see what it did. Preserves the op's id and timestamp —
+/// callers can see "an op happened at time T" — but blanks the actor,
+/// kind, and one_line summary so neither the author nor the action
+/// leaks.
+fn redacted_op_view(op: &Op) -> OpView {
+    OpView {
+        id: op.id.0,
+        ts_ns: op.ts_ns,
+        actor: "<redacted>".to_string(),
+        kind: "Redacted".to_string(),
+        one_line: "<redacted>".to_string(),
+    }
 }
 
 fn parse_change_id(s: &str) -> ApiResult<ChangeId> {
@@ -639,7 +702,9 @@ pub struct OplogQuery {
 pub async fn list_oplog(
     State(state): State<Arc<AppState>>,
     Query(q): Query<OplogQuery>,
+    headers: HeaderMap,
 ) -> ApiResult<Json<Vec<OpView>>> {
+    let caller = caller_from(&headers);
     let log = state.log.lock().await;
     let mut ops = log.list()?;
     if let Some(limit) = q.limit {
@@ -650,7 +715,19 @@ pub async fn list_oplog(
             ops.drain(..total - limit);
         }
     }
-    Ok(Json(ops.iter().map(OpView::from_core).collect()))
+    // Per-op visibility filtering: an op is shown un-redacted only if
+    // the caller is allowed to see every change it references. Anything
+    // else collapses to a `Redacted` stub that preserves only the op's
+    // id and timestamp (callers still know *that* an op happened).
+    let mut out = Vec::with_capacity(ops.len());
+    for op in &ops {
+        if is_op_visible(&state, op, &caller)? {
+            out.push(OpView::from_core(op));
+        } else {
+            out.push(redacted_op_view(op));
+        }
+    }
+    Ok(Json(out))
 }
 
 pub async fn undo(

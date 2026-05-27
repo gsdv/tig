@@ -363,6 +363,174 @@ async fn snapshot_view_is_consistent_with_change_view_history() {
 }
 
 #[tokio::test]
+async fn oplog_redacts_ops_referencing_invisible_changes() {
+    // Per-op visibility filter: ops that touch a Change bob can't see
+    // must come back redacted — no actor, no kind, no one_line. Just
+    // the op id and timestamp survive so bob can see "an op happened
+    // here" without seeing what.
+    let (app, _dir) = fixture();
+    let draft = make_draft(&app, "alice", "alice's secret").await;
+    let public = make_public(&app, "alice", "alice's public work").await;
+
+    // Patch a file into each to produce a snap op too.
+    let _ = app
+        .clone()
+        .oneshot(patch_bytes_as(
+            &format!("/v1/changes/{}/tree/secret.rs", draft.id),
+            "alice",
+            b"secret_fn()".to_vec(),
+        ))
+        .await
+        .unwrap();
+    let _ = app
+        .clone()
+        .oneshot(patch_bytes_as(
+            &format!("/v1/changes/{}/tree/public.rs", public.id),
+            "alice",
+            b"public_fn()".to_vec(),
+        ))
+        .await
+        .unwrap();
+
+    // Bob fetches the oplog.
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/oplog", "bob"))
+        .await
+        .unwrap();
+    let ops: Vec<OpView> = json_body(resp).await;
+    assert_eq!(ops.len(), 4, "two ChangeNew + two Snap = 4 total ops");
+
+    // Partition by visibility.
+    let redacted: Vec<&OpView> = ops.iter().filter(|o| o.kind == "Redacted").collect();
+    let visible: Vec<&OpView> = ops.iter().filter(|o| o.kind != "Redacted").collect();
+
+    // Bob should see exactly the two ops that touched alice's public
+    // change (ChangeNew + Snap) and the two for the draft should be
+    // redacted.
+    assert_eq!(redacted.len(), 2);
+    assert_eq!(visible.len(), 2);
+
+    // Redacted ops disclose nothing about author or contents.
+    for r in &redacted {
+        assert_eq!(r.actor, "<redacted>");
+        assert_eq!(r.kind, "Redacted");
+        assert_eq!(r.one_line, "<redacted>");
+        // But id is preserved so callers can reason about ordering.
+        // (Just sanity-check it's nonzero or matches what we expect; any
+        // value distinguishable from default is fine here.)
+        let _ = r.id;
+    }
+
+    // The visible ops correctly reveal the public change's details.
+    let visible_kinds: Vec<&str> = visible.iter().map(|o| o.kind.as_str()).collect();
+    assert!(visible_kinds.contains(&"ChangeNew"));
+    assert!(visible_kinds.contains(&"Snap"));
+    for v in &visible {
+        assert_ne!(v.actor, "<redacted>");
+        // Sanity: the snap hash (in the one_line) doesn't accidentally
+        // include any of the draft's content. Hard to assert directly;
+        // we settle for "actor names are real."
+        assert!(v.actor.contains(':') || !v.actor.is_empty());
+    }
+
+    // Alice sees everything un-redacted.
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/oplog", "alice"))
+        .await
+        .unwrap();
+    let alice_ops: Vec<OpView> = json_body(resp).await;
+    assert_eq!(alice_ops.len(), 4);
+    assert!(
+        alice_ops.iter().all(|o| o.kind != "Redacted"),
+        "alice (the author) should see everything un-redacted"
+    );
+}
+
+#[tokio::test]
+async fn publishing_a_draft_unredacts_its_prior_ops_for_outsiders() {
+    // Bob's view should change *dynamically* based on the current
+    // visibility — once alice publishes, the ops that were previously
+    // redacted to bob should now be readable. Visibility is checked at
+    // fetch time, not at op-record time.
+    let (app, _dir) = fixture();
+    let draft = make_draft(&app, "alice", "secret").await;
+    let _ = app
+        .clone()
+        .oneshot(patch_bytes_as(
+            &format!("/v1/changes/{}/tree/x.rs", draft.id),
+            "alice",
+            b"contents".to_vec(),
+        ))
+        .await
+        .unwrap();
+
+    // Before publish: bob sees redacted.
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/oplog", "bob"))
+        .await
+        .unwrap();
+    let before: Vec<OpView> = json_body(resp).await;
+    assert!(
+        before.iter().all(|o| o.kind == "Redacted"),
+        "every op should be redacted to bob before publish"
+    );
+
+    // Alice publishes.
+    let _ = app
+        .clone()
+        .oneshot(post_json_as(
+            &format!("/v1/changes/{}/transition", draft.id),
+            "alice",
+            json!({ "state": "working", "visibility": "public" }),
+        ))
+        .await
+        .unwrap();
+
+    // After publish: bob now sees the previously-redacted ops with
+    // their original kinds.
+    let resp = app
+        .clone()
+        .oneshot(get_as("/v1/oplog", "bob"))
+        .await
+        .unwrap();
+    let after: Vec<OpView> = json_body(resp).await;
+    let redacted_after = after.iter().filter(|o| o.kind == "Redacted").count();
+    assert_eq!(
+        redacted_after, 0,
+        "no ops should be redacted after publish; got {after:?}"
+    );
+    // And the kinds line up with what alice actually did.
+    let kinds: Vec<&str> = after.iter().map(|o| o.kind.as_str()).collect();
+    assert!(kinds.contains(&"ChangeNew"));
+    assert!(kinds.contains(&"Snap"));
+    assert!(kinds.contains(&"ChangeTransition"));
+}
+
+#[tokio::test]
+async fn anonymous_caller_cannot_see_either_principals_drafts_in_oplog() {
+    // The default caller (no X-Tig-Principal header) is `local:tigd`.
+    // Drafts authored by alice or bob shouldn't leak even into
+    // anonymous oplog queries.
+    let (app, _dir) = fixture();
+    let _ = make_draft(&app, "alice", "alice's secret").await;
+    let _ = make_draft(&app, "bob", "bob's secret").await;
+
+    let resp = app.clone().oneshot(get("/v1/oplog")).await.unwrap();
+    let ops: Vec<OpView> = json_body(resp).await;
+    assert!(
+        ops.iter().all(|o| o.kind == "Redacted"),
+        "anonymous caller should see both drafts as redacted; got {ops:?}"
+    );
+}
+
+fn get(path: &str) -> axum::http::Request<Body> {
+    Request::builder().uri(path).body(Body::empty()).unwrap()
+}
+
+#[tokio::test]
 async fn tree_view_returns_for_alice_on_her_own_draft() {
     let (app, _dir) = fixture();
     let draft = make_draft(&app, "alice", "secret").await;
