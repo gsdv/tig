@@ -12,6 +12,7 @@
 //! and §11 for milestone-0 scope.
 
 pub mod blob;
+pub mod canonical;
 pub mod change;
 pub mod error;
 pub mod hash;
@@ -23,6 +24,7 @@ pub mod tree;
 pub mod vis;
 
 pub use blob::Blob;
+pub use canonical::canonical_encode;
 pub use change::{Change, ChangeState};
 pub use error::Error;
 pub use hash::Hash;

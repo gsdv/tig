@@ -59,4 +59,24 @@ mod tests {
         let b = Blob::new(b"b".to_vec()).hash().unwrap();
         assert_ne!(a, b);
     }
+
+    /// Pin the exact hash of a known fixture under the canonical
+    /// encoder. If this ever changes, the on-disk format silently
+    /// diverged — every stored object's hash would be invalidated
+    /// across versions. This test is the canary.
+    #[test]
+    fn blob_hash_is_stable_across_versions() {
+        let empty = Blob::new(Vec::new()).hash().unwrap();
+        assert_eq!(
+            empty.to_hex(),
+            "542b1ad8f8d11112b689b61edb6f597fe9cdfd6aa888be9654938eb91385595c",
+            "empty-blob hash drifted; canonical encoding changed under us",
+        );
+        let hello = Blob::new(b"hello".to_vec()).hash().unwrap();
+        assert_eq!(
+            hello.to_hex(),
+            "05f6c41d2f5ea325dee96d79ca96a71d0aa8a1b393a31c051435ac08a87f373a",
+            "non-empty-blob hash drifted; canonical encoding changed under us",
+        );
+    }
 }

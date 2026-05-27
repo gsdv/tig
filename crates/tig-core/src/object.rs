@@ -80,9 +80,15 @@ impl RawObject {
 pub trait Encodable: Sized + Serialize + DeserializeOwned {
     const KIND: ObjectKind;
 
+    /// Serialize via the **canonical** CBOR profile (see
+    /// [`crate::canonical`]). Map keys are sorted per RFC 8949
+    /// §4.2.1, so two encoders that disagree on struct field
+    /// declaration order still produce byte-identical output —
+    /// content addressing is sound across implementations and across
+    /// future code reorganizations of the same logical schema.
     fn encode(&self) -> Result<RawObject> {
-        let mut bytes = Vec::new();
-        ciborium::ser::into_writer(self, &mut bytes).map_err(|e| Error::Encode(e.to_string()))?;
+        let bytes =
+            crate::canonical::canonical_encode(self).map_err(|e| Error::Encode(e.to_string()))?;
         Ok(RawObject {
             kind: Self::KIND,
             bytes,
