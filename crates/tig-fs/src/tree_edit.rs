@@ -62,6 +62,46 @@ pub fn write_sealed_at_path(
     )
 }
 
+/// Same as [`read_blob_at_path`] but returns `Ok(None)` when the path
+/// doesn't exist, or when it names something other than a regular
+/// file. Useful for `tig blame`, which has to ask "did this file
+/// exist in the parent snap?" — a perfectly normal question that
+/// shouldn't be an error.
+///
+/// We walk the tree by hand rather than re-using `lookup_entry`
+/// because the latter returns the same `Decode` error variant for
+/// both "missing path" and "real corruption", and string-matching on
+/// the message would be fragile.
+pub fn try_read_blob_at_path(
+    repo: &Repository,
+    root_tree: Hash,
+    path: &str,
+) -> Result<Option<Vec<u8>>> {
+    let parts = split_path(path)?;
+    let mut tree = Tree::decode(&repo.get(&root_tree)?).map_err(Error::Core)?;
+    for (i, part) in parts.iter().enumerate() {
+        let Some(entry) = tree.get(part).cloned() else {
+            return Ok(None);
+        };
+        let is_last = i + 1 == parts.len();
+        if is_last {
+            if entry.kind != EntryKind::File {
+                return Ok(None);
+            }
+            let blob = Blob::decode(&repo.get(&entry.target)?).map_err(Error::Core)?;
+            return Ok(Some(blob.bytes));
+        }
+        if entry.kind != EntryKind::Tree {
+            // Mid-path component isn't a tree — file can't exist below.
+            return Ok(None);
+        }
+        tree = Tree::decode(&repo.get(&entry.target)?).map_err(Error::Core)?;
+    }
+    // `parts` is non-empty (`split_path` rejects empties), so the
+    // loop always returns inside.
+    unreachable!()
+}
+
 /// Read the raw bytes of the blob at `path`. Fails if `path` resolves
 /// to a tree, symlink, or anything other than a regular file.
 pub fn read_blob_at_path(repo: &Repository, root_tree: Hash, path: &str) -> Result<Vec<u8>> {

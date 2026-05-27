@@ -21,14 +21,14 @@ use tig_core::{
     Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path, snap_change_directly,
-    write_blob_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff, Hunk, HunkLine,
-    SnapOptions, SnapOutcome,
+    blame_at, delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path,
+    snap_change_directly, write_blob_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions,
+    FileDiff, Hunk, HunkLine, SnapOptions, SnapOutcome,
 };
 use tig_protocol::{
-    ChangeView, CreateChangeReq, DiffQuery, DiffView, ErrorResp, FileDiffView, HealthView,
-    HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView, TransitionReq,
-    TreeView, UndoReq, UndoResp,
+    BlameLineView, BlameQuery, BlameView, ChangeView, CreateChangeReq, DiffQuery, DiffView,
+    ErrorResp, FileDiffView, HealthView, HunkLineView, HunkView, OpView, SealedView, SnapReq,
+    SnapResp, SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
 };
 use tig_store::{undo_once, Op, OpInProgress, OpKind, RefSnapshot};
 
@@ -659,6 +659,59 @@ fn hunk_view(h: &Hunk) -> HunkView {
                 HunkLine::Remove(s) => HunkLineView::Remove(s.clone()),
             })
             .collect(),
+    }
+}
+
+// --- blame ---------------------------------------------------------------
+
+/// `GET /v1/changes/{id}/blame/{*path}?snap=<hash>`
+///
+/// Per-line authorship attribution. The change must be visible to
+/// the caller. The optional `snap` query parameter pins the
+/// attribution to a specific snapshot — that snap must also be
+/// reachable from a visible change (same reachability gate the
+/// raw-snapshot endpoint applies).
+pub async fn blame_path(
+    State(state): State<Arc<AppState>>,
+    Path((id, path)): Path<(String, String)>,
+    Query(q): Query<BlameQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Json<BlameView>> {
+    let id = parse_change_id(&id)?;
+    let caller = caller_from(&headers);
+    let change = load_visible_change(&state, &id, &caller)?;
+
+    let at_hash = match &q.snap {
+        Some(s) => parse_hash(s)?,
+        None => change.current,
+    };
+    // Reachability gate: if the caller supplied a snap that isn't
+    // reachable from any change they can see, refuse. Without this,
+    // a leaked snap hash could be used to blame across visibility
+    // boundaries.
+    let visible = visible_snapshot_set(&state, &caller)?;
+    if !visible.contains(&at_hash) {
+        return Err(ApiError::NotFound(format!(
+            "snapshot {} not visible",
+            &at_hash.to_hex()[..12]
+        )));
+    }
+
+    let lines = blame_at(&state.repo, &path, &at_hash)?;
+    Ok(Json(BlameView {
+        path,
+        at: at_hash.to_hex(),
+        lines: lines.iter().map(blame_line_view).collect(),
+    }))
+}
+
+fn blame_line_view(b: &BlameLine) -> BlameLineView {
+    BlameLineView {
+        line: b.line.clone(),
+        snap: b.snap.to_hex(),
+        author: b.author.0.clone(),
+        timestamp_ns: b.timestamp_ns,
+        message: b.message.clone(),
     }
 }
 

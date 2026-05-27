@@ -356,6 +356,36 @@ pub struct DiffQuery {
     pub paths: Vec<String>,
 }
 
+// --- blame (wire shape) --------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlameView {
+    pub path: String,
+    /// Hex hash of the snapshot the blame was computed against.
+    pub at: String,
+    pub lines: Vec<BlameLineView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BlameLineView {
+    /// Line content, no trailing newline.
+    pub line: String,
+    /// Hex hash of the snap that last introduced/modified this line.
+    pub snap: String,
+    pub author: String,
+    pub timestamp_ns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct BlameQuery {
+    /// Hex hash of the snapshot to blame against. Defaults to the
+    /// change's current snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snap: Option<String>,
+}
+
 // --- error envelope ------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

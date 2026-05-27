@@ -10,6 +10,7 @@
 //!   - `watch` — fsevents/inotify-driven auto-snap (§5.1)
 //!   - `workspace` — multi-checkout management (§6)
 
+pub mod blame;
 pub mod clone;
 pub mod diff;
 pub mod error;
@@ -20,6 +21,7 @@ pub mod snap;
 pub mod tree_edit;
 pub mod watch;
 
+pub use blame::{blame_at, BlameLine};
 #[cfg(target_os = "macos")]
 pub use clone::ApfsClone;
 pub use clone::{detect as detect_clone_engine, AutoClone, CloneEngine, CopyFallback};
@@ -35,8 +37,8 @@ pub use restore::{restore_tree_into, RestoreOptions, RestoreOutcome};
 pub use scan::{scan, ScanOptions};
 pub use snap::{snap_change_directly, snap_now, SnapOptions, SnapOutcome};
 pub use tree_edit::{
-    delete_at_path, list_tree, lookup_entry, read_blob_at_path, write_blob_at_path,
-    write_sealed_at_path,
+    delete_at_path, list_tree, lookup_entry, read_blob_at_path, try_read_blob_at_path,
+    write_blob_at_path, write_sealed_at_path,
 };
 pub use watch::{watch_and_snap, WatchEvent, WatchOptions};
 

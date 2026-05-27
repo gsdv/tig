@@ -11,9 +11,9 @@ use tig_core::{
     Blob, Change, ChangeState, Encodable, ObjectKind, PrincipalId, Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
+    blame_at, detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
     materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now, watch_and_snap,
-    write_sealed_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff, HunkLine,
+    write_sealed_at_path, BlameLine, ChangeKind as FsChangeKind, DiffOptions, FileDiff, HunkLine,
     MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
 };
 use tig_store::{
@@ -147,6 +147,16 @@ enum Cmd {
         force: bool,
     },
 
+    /// Per-line authorship attribution. Walks back through the
+    /// snapshot history and assigns each line to the snap that last
+    /// introduced or modified it.
+    Blame {
+        path: String,
+        /// Snap prefix to blame against. Defaults to the current snap.
+        #[arg(value_name = "SNAP")]
+        snap: Option<String>,
+    },
+
     /// Print any object by its hash. Useful for debugging.
     CatObject { hash: String },
 }
@@ -253,6 +263,7 @@ fn run(cli: Cli) -> Result<()> {
             path,
         } => cmd_diff(range.as_deref(), no_hunks, &path),
         Cmd::Restore { snap_prefix, force } => cmd_restore(&snap_prefix, force),
+        Cmd::Blame { path, snap } => cmd_blame(&path, snap.as_deref()),
         Cmd::Wt(WtCmd::Make { name, at }) => cmd_wt_make(&name, at.as_deref()),
         Cmd::Wt(WtCmd::List) => cmd_wt_list(),
         Cmd::Wt(WtCmd::Drop { name, keep_files }) => cmd_wt_drop(&name, keep_files),
@@ -1222,6 +1233,69 @@ fn entry_kind_label(k: tig_core::EntryKind) -> &'static str {
         tig_core::EntryKind::Conflict => "conflict marker",
         tig_core::EntryKind::Submodule => "submodule",
     }
+}
+
+// --- blame ---------------------------------------------------------------
+
+fn cmd_blame(path: &str, snap_arg: Option<&str>) -> Result<()> {
+    let ws = discover_workspace()?;
+
+    // Resolve target snap: arg or current.
+    let target = match snap_arg {
+        Some(p) => ws.repo.resolve_hash_prefix(p)?,
+        None => {
+            let id = ws
+                .current_change_id()?
+                .ok_or_else(|| anyhow!("no current change to blame against"))?;
+            ws.repo.get_change(&id)?.current
+        }
+    };
+
+    // Validate it's a Snapshot kind.
+    let raw = ws.repo.get(&target)?;
+    if raw.kind != ObjectKind::Snapshot {
+        return Err(anyhow!(
+            "{} is a {}, not a snapshot",
+            &target.to_hex()[..12],
+            raw.kind.name()
+        ));
+    }
+
+    let lines = blame_at(&ws.repo, path, &target)?;
+    if lines.is_empty() {
+        println!("(empty file)");
+        return Ok(());
+    }
+
+    // Build a width for line-number alignment.
+    let n_width = lines.len().to_string().len();
+    // Find the longest author for column alignment.
+    let author_width = lines
+        .iter()
+        .map(|l| l.author.0.len())
+        .max()
+        .unwrap_or(0)
+        .min(20); // cap to keep output readable
+
+    for (i, line) in lines.iter().enumerate() {
+        print_blame_line(line, i + 1, n_width, author_width);
+    }
+    Ok(())
+}
+
+fn print_blame_line(b: &BlameLine, line_no: usize, n_width: usize, author_width: usize) {
+    let short = &b.snap.to_hex()[..12];
+    let author_disp: String = if b.author.0.len() <= author_width {
+        format!("{:<width$}", b.author.0, width = author_width)
+    } else {
+        format!("{}…", &b.author.0[..author_width.saturating_sub(1)])
+    };
+    let ts = b.timestamp_ns / 1_000_000_000;
+    println!(
+        "{short} ({author_disp} {ts:>10}) {line_no:>width$}  {content}",
+        width = n_width,
+        content = b.line,
+    );
 }
 
 // --- restore -------------------------------------------------------------
