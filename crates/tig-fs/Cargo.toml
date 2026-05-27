@@ -1,0 +1,17 @@
+[package]
+name = "tig-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Working-copy scanning, ignore handling, and CoW workspaces for tig."
+
+[dependencies]
+tig-core.workspace = true
+tig-store.workspace = true
+walkdir.workspace = true
+thiserror.workspace = true
+notify = "8"
+notify-debouncer-full = "0.6"
+
+[dev-dependencies]
+tempfile = "3"

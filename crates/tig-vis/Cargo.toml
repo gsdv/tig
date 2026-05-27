@@ -1,0 +1,24 @@
+[package]
+name = "tig-vis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Visibility, identity, and sealed (encrypted) values for tig."
+
+[dependencies]
+tig-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_bytes = "0.11"
+hex.workspace = true
+thiserror.workspace = true
+
+# crypto stack: well-known, audited, no_std-friendly
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["std"] }
+
+[dev-dependencies]
+tempfile = "3"

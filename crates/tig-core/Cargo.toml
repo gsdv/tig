@@ -1,0 +1,18 @@
+[package]
+name = "tig-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure object model, hashing, and canonical encoding for tig."
+
+[dependencies]
+blake3.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+hex.workspace = true
+ulid.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

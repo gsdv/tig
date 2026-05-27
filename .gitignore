@@ -1,0 +1,19 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# tig itself — anyone running the demo scripts in a subdir
+# of this repo shouldn't accidentally commit their own .tig/.
+.tig/
+.tig-worktrees/
+.tig-workspace

@@ -1,0 +1,21 @@
+[package]
+name = "tig-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The `tig` command-line client."
+
+[[bin]]
+name = "tig"
+path = "src/main.rs"
+
+[dependencies]
+tig-core.workspace = true
+tig-store.workspace = true
+tig-fs.workspace = true
+tig-vis.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+hex.workspace = true
+ciborium.workspace = true
+ctrlc = { version = "3", features = ["termination"] }

@@ -1,0 +1,67 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tig-core",
+    "crates/tig-store",
+    "crates/tig-fs",
+    "crates/tig-cli",
+    "crates/tig-protocol",
+    "crates/tig-vis",
+    "crates/tigd",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+authors = ["tig contributors"]
+license = "Apache-2.0 OR MIT"
+repository = "https://example.invalid/tig"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# in-workspace
+tig-core = { path = "crates/tig-core" }
+tig-store = { path = "crates/tig-store" }
+tig-fs = { path = "crates/tig-fs" }
+tig-protocol = { path = "crates/tig-protocol" }
+tig-vis = { path = "crates/tig-vis" }
+
+# async HTTP stack for tigd
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+
+# hashing & encoding
+blake3 = "1.5"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+ciborium = "0.2"
+hex = "0.4"
+
+# time & ids
+ulid = { version = "1", features = ["serde"] }
+
+# errors & util
+thiserror = "2"
+anyhow = "1"
+
+# cli
+clap = { version = "4", features = ["derive"] }
+
+# fs
+walkdir = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev]
+opt-level = 1
