@@ -166,6 +166,21 @@ impl Repository {
         self.refs.set_head(id)
     }
 
+    // --- garbage collection -------------------------------------------
+
+    /// Sweep the object store of anything unreachable from live refs
+    /// (and, by default, oplog-captured changes — see
+    /// [`crate::gc::GcOptions`] for the knobs). Caller must hold the
+    /// repo write lock for the duration; see [`crate::gc`] for the
+    /// concurrency contract.
+    pub fn collect_garbage(
+        &self,
+        log: &crate::OpLog,
+        opts: &crate::GcOptions,
+    ) -> Result<crate::GcSummary> {
+        crate::gc::collect_garbage(self, log, opts)
+    }
+
     // --- multi-process write locking ----------------------------------
 
     fn lock_file_path(&self) -> PathBuf {

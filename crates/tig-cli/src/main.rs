@@ -17,9 +17,9 @@ use tig_fs::{
     MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
 };
 use tig_store::{
-    undo_once, workspace_ref_snapshot, write_marker, OpInProgress, OpKind, OpLog, RefSnapshot,
-    RefStore, Repository, Workspace, WorkspaceId, WorkspaceKind, WorkspaceManifest,
-    WorkspaceMarker, WorkspaceStore, DEFAULT_WORKTREE_DIR,
+    collect_garbage, undo_once, workspace_ref_snapshot, write_marker, GcOptions, OpInProgress,
+    OpKind, OpLog, RefSnapshot, RefStore, Repository, Workspace, WorkspaceId, WorkspaceKind,
+    WorkspaceManifest, WorkspaceMarker, WorkspaceStore, DEFAULT_WORKTREE_DIR,
 };
 use tig_vis::{
     seal as do_seal, sign_token, unseal as do_unseal, Claims, KeyPair, Principal, PrincipalKind,
@@ -174,6 +174,23 @@ enum Cmd {
 
     /// Print any object by its hash. Useful for debugging.
     CatObject { hash: String },
+
+    /// Collect garbage in the object store. Removes objects unreachable
+    /// from any current change *or* from any operation still in the
+    /// op-log (so `tig undo` of a `ChangeNew` is not silently
+    /// destructive).
+    Gc {
+        /// Print what would be removed, but don't actually delete.
+        #[arg(long)]
+        dry_run: bool,
+        /// **Dangerous.** Skip oplog-captured snapshots when marking.
+        /// A subsequent `tig undo` of a `ChangeNew` op will silently
+        /// fail to restore the change's contents. Only useful if you
+        /// know the oplog is already truncated past your last
+        /// `ChangeNew` and you want to free a chunk of disk.
+        #[arg(long)]
+        ignore_oplog: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -296,7 +313,39 @@ fn run(cli: Cli) -> Result<()> {
         } => cmd_seal(&path, &recipients, from_file.as_deref(), data.as_deref()),
         Cmd::Reveal { path, r#as } => cmd_reveal(&path, r#as.as_deref()),
         Cmd::CatObject { hash } => cmd_cat_object(&hash),
+        Cmd::Gc {
+            dry_run,
+            ignore_oplog,
+        } => cmd_gc(dry_run, ignore_oplog),
     }
+}
+
+fn cmd_gc(dry_run: bool, ignore_oplog: bool) -> Result<()> {
+    let ws = discover_workspace()?;
+    let _lock = ws.repo.lock_for_write()?;
+    let log = OpLog::open(ws.repo.root())?;
+    let opts = GcOptions {
+        dry_run,
+        include_oplog_snapshots: !ignore_oplog,
+    };
+    let summary = collect_garbage(&ws.repo, &log, &opts)?;
+    if summary.dry_run {
+        println!(
+            "dry-run: would remove {} object(s), {} kept, {} bytes freed",
+            summary.removed, summary.kept, summary.bytes_freed,
+        );
+    } else {
+        println!(
+            "removed {} object(s), {} kept, {} bytes freed",
+            summary.removed, summary.kept, summary.bytes_freed,
+        );
+    }
+    if ignore_oplog && summary.removed > 0 {
+        eprintln!(
+            "  warning: --ignore-oplog was set; future `tig undo` of a ChangeNew may be incomplete",
+        );
+    }
+    Ok(())
 }
 
 fn cwd() -> Result<PathBuf> {

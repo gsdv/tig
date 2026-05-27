@@ -27,10 +27,10 @@ use tig_fs::{
 };
 use tig_protocol::{
     BlameLineView, BlameQuery, BlameView, ChangeView, CreateChangeReq, DiffQuery, DiffView,
-    ErrorResp, FileDiffView, HealthView, HunkLineView, HunkView, OpView, SealedView, SnapReq,
-    SnapResp, SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
+    ErrorResp, FileDiffView, GcReq, GcView, HealthView, HunkLineView, HunkView, OpView, SealedView,
+    SnapReq, SnapResp, SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
 };
-use tig_store::{undo_once, Op, OpInProgress, OpKind, RefSnapshot};
+use tig_store::{collect_garbage, undo_once, GcOptions, Op, OpInProgress, OpKind, RefSnapshot};
 use tig_vis::{peek_claims, verify_token, PrincipalStore};
 
 use crate::error::{ApiError, ApiResult};
@@ -855,6 +855,52 @@ pub async fn undo(
             recorded_op_id: None,
             message: "nothing to undo".into(),
         },
+    }))
+}
+
+// --- gc ------------------------------------------------------------------
+
+/// `POST /v1/gc` — sweep the object store.
+///
+/// Requires the caller to be *authenticated* via Authorization
+/// (Bearer). The trust-by-name `X-Tig-Principal` header is rejected
+/// here even though other endpoints accept it: GC is a destructive,
+/// IO-heavy operation, and we'd rather force operators to issue a
+/// signed token than let any unauth'd local caller spin the disk.
+///
+/// Takes the repo write lock so concurrent writers serialize behind
+/// us. The oplog lock is acquired too because we read the log to
+/// build the root set.
+pub async fn gc(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Option<Json<GcReq>>,
+) -> ApiResult<Json<GcView>> {
+    // Require a real signed token; reject the trust-by-name fallback.
+    if headers.get(AUTH_HEADER).is_none() {
+        return Err(ApiError::Unauthorized(
+            "POST /v1/gc requires a signed Bearer token; trust-by-name is not accepted here".into(),
+        ));
+    }
+    let _caller = caller_from(&state, &headers)?;
+
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let opts = GcOptions {
+        dry_run: req.dry_run,
+        include_oplog_snapshots: !req.ignore_oplog,
+    };
+
+    let _lock = state.repo.lock_for_write()?;
+    let log = state.log.lock().await;
+    let summary = collect_garbage(&state.repo, &log, &opts)
+        .map_err(|e| ApiError::Internal(format!("gc: {e}")))?;
+
+    Ok(Json(GcView {
+        roots: summary.roots,
+        kept: summary.kept,
+        removed: summary.removed,
+        bytes_freed: summary.bytes_freed,
+        dry_run: summary.dry_run,
     }))
 }
 

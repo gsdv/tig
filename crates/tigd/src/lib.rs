@@ -21,6 +21,7 @@
 //! GET    /v1/snapshots/{hash}                   fetch a snapshot object
 //! GET    /v1/oplog                              list ops, newest last
 //! POST   /v1/oplog/undo                         rewind one op
+//! POST   /v1/gc                                 collect garbage (auth required)
 //! ```
 //!
 //! The body of `GET /tree/{*path}` is the raw blob if path is a file, or
@@ -72,6 +73,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/snapshots/{hash}", get(handlers::get_snapshot))
         .route("/v1/oplog", get(handlers::list_oplog))
         .route("/v1/oplog/undo", post(handlers::undo))
+        .route("/v1/gc", post(handlers::gc))
         .with_state(state)
 }
 

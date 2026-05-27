@@ -133,6 +133,64 @@ impl FsObjectStore {
     }
 }
 
+impl FsObjectStore {
+    /// The root directory holding all `<fanout>/<rest>` shards. Exposed
+    /// for the GC, which has to walk the entire store.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// Yield every `(hash, size_on_disk)` pair currently stored. The GC
+    /// uses this to sweep — we'd rather iterate once than call `fs::stat`
+    /// twice per file. The order is unspecified.
+    ///
+    /// Skips tempfiles (`.tmp-*`) and dotfiles so a writer racing with
+    /// the iterator doesn't surface half-written objects.
+    pub fn iter_all<F: FnMut(Hash, u64) -> Result<()>>(&self, mut f: F) -> Result<()> {
+        let entries = match fs::read_dir(&self.root) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(Error::Io(e)),
+        };
+        for shard in entries {
+            let shard = shard?;
+            let shard_name = shard.file_name().to_string_lossy().into_owned();
+            if shard_name.starts_with('.') || shard_name.len() != 2 {
+                continue;
+            }
+            for file in fs::read_dir(shard.path())? {
+                let file = file?;
+                let name = file.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || name.len() != 62 {
+                    continue;
+                }
+                let hex = format!("{shard_name}{name}");
+                let hash = match Hash::from_hex(&hex) {
+                    Ok(h) => h,
+                    // A stray non-hash file in the store is suspicious
+                    // but shouldn't crash the sweep — skip it.
+                    Err(_) => continue,
+                };
+                let size = file.metadata()?.len();
+                f(hash, size)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Best-effort delete by hash. Used by the GC sweep — never call
+    /// this from regular code paths; objects are content-addressed and
+    /// should be considered immutable once written.
+    pub fn remove(&self, hash: &Hash) -> Result<()> {
+        let path = self.path_for(hash);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Io(e)),
+        }
+    }
+}
+
 impl ObjectStore for FsObjectStore {
     fn put(&self, obj: &RawObject) -> Result<Hash> {
         let hash = obj.hash();

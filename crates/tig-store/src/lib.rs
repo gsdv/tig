@@ -12,6 +12,7 @@
 //! ref writes are CAS).
 
 pub mod error;
+pub mod gc;
 pub mod objects;
 pub mod oplog;
 pub mod refs;
@@ -19,6 +20,7 @@ pub mod repo;
 pub mod workspace;
 
 pub use error::Error;
+pub use gc::{collect_garbage, GcOptions, GcSummary};
 pub use objects::{FsObjectStore, ObjectStore};
 pub use oplog::{
     pick_op_to_undo, restore_ref, undo_once, workspace_ref_snapshot, Op, OpInProgress, OpKind,

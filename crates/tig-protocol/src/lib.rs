@@ -386,6 +386,31 @@ pub struct BlameQuery {
     pub snap: Option<String>,
 }
 
+// --- garbage collection (wire shape) ------------------------------------
+
+/// Body for `POST /v1/gc`. Both fields default to safe values so a
+/// no-body POST does the right thing.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct GcReq {
+    /// Walk + count but don't delete anything.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Skip the oplog when building the root set. **Risky** — see the
+    /// CLI flag docs. Off by default.
+    #[serde(default)]
+    pub ignore_oplog: bool,
+}
+
+/// Response for `POST /v1/gc`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GcView {
+    pub roots: usize,
+    pub kept: usize,
+    pub removed: usize,
+    pub bytes_freed: u64,
+    pub dry_run: bool,
+}
+
 // --- error envelope ------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
