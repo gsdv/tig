@@ -20,6 +20,11 @@ pub enum ApiError {
     BadRequest(String),
     #[error("{0}")]
     Conflict(String),
+    /// Token-based auth failed — bad signature, expired token, unknown
+    /// subject, etc. The body carries the specific reason for
+    /// debugging; the status is always 401.
+    #[error("{0}")]
+    Unauthorized(String),
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -30,6 +35,7 @@ impl ApiError {
             ApiError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             ApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             ApiError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            ApiError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             ApiError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         }
     }

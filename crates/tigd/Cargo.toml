@@ -17,6 +17,7 @@ path = "src/lib.rs"
 tig-core.workspace = true
 tig-store.workspace = true
 tig-fs.workspace = true
+tig-vis.workspace = true
 tig-protocol.workspace = true
 
 tokio.workspace = true
@@ -39,3 +40,4 @@ thiserror.workspace = true
 tempfile = "3"
 http-body-util.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tig-vis.workspace = true

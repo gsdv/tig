@@ -127,6 +127,165 @@ impl KeyPair {
     }
 }
 
+// --- Ed25519 signing keys -------------------------------------------------
+//
+// Distinct from the X25519 keys above. X25519 is for sealing (ECDH +
+// AEAD). Ed25519 is for signing — specifically, the daemon's signed
+// bearer tokens (see `tig-vis::tokens`). Each Principal owns both
+// keypairs; nothing today derives one from the other (a future
+// optimization could collapse them via the standard Ed25519 →
+// X25519 conversion).
+
+/// 32-byte Ed25519 public key. Hex on the wire.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SignPublicKey(pub [u8; 32]);
+
+impl SignPublicKey {
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.0)
+    }
+
+    pub fn from_hex(s: &str) -> Result<Self, Error> {
+        let bytes = hex::decode(s)?;
+        if bytes.len() != 32 {
+            return Err(Error::Crypto(format!(
+                "expected 32-byte Ed25519 public key, got {} bytes",
+                bytes.len()
+            )));
+        }
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&bytes);
+        Ok(SignPublicKey(out))
+    }
+
+    /// Verify `sig` against `msg`. Returns true iff the signature
+    /// was produced by the matching `SignSecretKey`.
+    pub fn verify(&self, msg: &[u8], sig: &Signature) -> bool {
+        use ed25519_dalek::Verifier;
+        let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&self.0) else {
+            return false;
+        };
+        let ed_sig = ed25519_dalek::Signature::from_bytes(&sig.0);
+        vk.verify(msg, &ed_sig).is_ok()
+    }
+}
+
+impl std::fmt::Debug for SignPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SignPublicKey({})", &self.to_hex()[..16])
+    }
+}
+
+impl std::fmt::Display for SignPublicKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_hex())
+    }
+}
+
+impl Serialize for SignPublicKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.to_hex().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignPublicKey {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        SignPublicKey::from_hex(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// 32-byte Ed25519 secret seed. Derived public key via `.public()`.
+/// Like its X25519 sibling, the bytes never serialize through this
+/// type; only the on-disk principal store stores them, hex-encoded.
+pub struct SignSecretKey(ed25519_dalek::SigningKey);
+
+impl SignSecretKey {
+    pub fn public(&self) -> SignPublicKey {
+        SignPublicKey(self.0.verifying_key().to_bytes())
+    }
+
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.0.to_bytes())
+    }
+
+    pub fn from_hex(s: &str) -> Result<Self, Error> {
+        let bytes = hex::decode(s)?;
+        if bytes.len() != 32 {
+            return Err(Error::Crypto(format!(
+                "expected 32-byte Ed25519 secret seed, got {} bytes",
+                bytes.len()
+            )));
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&bytes);
+        Ok(SignSecretKey(ed25519_dalek::SigningKey::from_bytes(&seed)))
+    }
+
+    /// Produce an Ed25519 signature over `msg`.
+    pub fn sign(&self, msg: &[u8]) -> Signature {
+        use ed25519_dalek::Signer;
+        let s = self.0.sign(msg);
+        Signature(s.to_bytes())
+    }
+}
+
+impl std::fmt::Debug for SignSecretKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SignSecretKey(<redacted>, pub={})",
+            &self.public().to_hex()[..16]
+        )
+    }
+}
+
+/// 64-byte Ed25519 signature.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Signature(pub [u8; 64]);
+
+impl Signature {
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.0)
+    }
+
+    pub fn from_hex(s: &str) -> Result<Self, Error> {
+        let bytes = hex::decode(s)?;
+        if bytes.len() != 64 {
+            return Err(Error::Crypto(format!(
+                "expected 64-byte Ed25519 signature, got {} bytes",
+                bytes.len()
+            )));
+        }
+        let mut out = [0u8; 64];
+        out.copy_from_slice(&bytes);
+        Ok(Signature(out))
+    }
+}
+
+impl std::fmt::Debug for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Signature({}…)", &self.to_hex()[..16])
+    }
+}
+
+pub struct SignKeyPair {
+    pub secret: SignSecretKey,
+    pub public: SignPublicKey,
+}
+
+impl SignKeyPair {
+    /// Generate a fresh Ed25519 keypair using the OS RNG.
+    pub fn generate() -> Self {
+        let signing = ed25519_dalek::SigningKey::generate(&mut OsRng);
+        let public = SignPublicKey(signing.verifying_key().to_bytes());
+        SignKeyPair {
+            secret: SignSecretKey(signing),
+            public,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,6 +326,47 @@ mod tests {
     #[test]
     fn debug_does_not_leak_secret() {
         let kp = KeyPair::generate();
+        let s = format!("{:?}", kp.secret);
+        assert!(s.contains("redacted"));
+        assert!(!s.contains(&kp.secret.to_hex()));
+    }
+
+    // --- Ed25519 sign/verify tests --------------------------------------
+
+    #[test]
+    fn sign_keypair_signs_and_verifies() {
+        let kp = SignKeyPair::generate();
+        let msg = b"hello, world";
+        let sig = kp.secret.sign(msg);
+        assert!(kp.public.verify(msg, &sig));
+    }
+
+    #[test]
+    fn sign_signature_rejects_wrong_message() {
+        let kp = SignKeyPair::generate();
+        let sig = kp.secret.sign(b"original");
+        assert!(!kp.public.verify(b"tampered", &sig));
+    }
+
+    #[test]
+    fn sign_signature_rejects_wrong_key() {
+        let alice = SignKeyPair::generate();
+        let bob = SignKeyPair::generate();
+        let sig = alice.secret.sign(b"x");
+        assert!(!bob.public.verify(b"x", &sig));
+    }
+
+    #[test]
+    fn sign_secret_hex_roundtrip_preserves_signatures() {
+        let kp = SignKeyPair::generate();
+        let restored = SignSecretKey::from_hex(&kp.secret.to_hex()).unwrap();
+        let msg = b"x";
+        assert_eq!(kp.secret.sign(msg).0, restored.sign(msg).0);
+    }
+
+    #[test]
+    fn sign_debug_does_not_leak_secret() {
+        let kp = SignKeyPair::generate();
         let s = format!("{:?}", kp.secret);
         assert!(s.contains("redacted"));
         assert!(!s.contains(&kp.secret.to_hex()));

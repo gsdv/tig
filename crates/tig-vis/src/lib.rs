@@ -19,10 +19,14 @@ pub mod error;
 pub mod keys;
 pub mod principal;
 pub mod seal;
+pub mod tokens;
 
 pub use error::Error;
-pub use keys::{KeyPair, PublicKey, SecretKey};
+pub use keys::{
+    KeyPair, PublicKey, SecretKey, SignKeyPair, SignPublicKey, SignSecretKey, Signature,
+};
 pub use principal::{Principal, PrincipalKind, PrincipalStore};
 pub use seal::{seal, unseal};
+pub use tokens::{peek_claims, sign_token, verify_token, Claims};
 
 pub type Result<T> = std::result::Result<T, Error>;

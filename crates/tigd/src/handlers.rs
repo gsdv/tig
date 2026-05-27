@@ -31,34 +31,85 @@ use tig_protocol::{
     SnapResp, SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
 };
 use tig_store::{undo_once, Op, OpInProgress, OpKind, RefSnapshot};
+use tig_vis::{peek_claims, verify_token, PrincipalStore};
 
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
 const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Header the daemon honours as the caller's identity claim. Trust-by-
-/// name: we don't verify a signature in this milestone (see ARCHITECTURE.md
-/// §8 + the milestone scoping conversation). Future: require a signed
-/// challenge instead.
+/// Trust-by-name fallback header. Honored only when no `Authorization`
+/// header is present. Real deployments configure `require_signed_tokens
+/// = true` (future work) to disable this fallback entirely; for now
+/// the local CLI and many tests still rely on it.
 pub const PRINCIPAL_HEADER: &str = "x-tig-principal";
+
+/// Standard HTTP Authorization header — `Bearer <signed-token>`. The
+/// token format is defined by `tig_vis::tokens` (Ed25519-signed JWT-
+/// style payload).
+pub const AUTH_HEADER: &str = "authorization";
 
 fn default_actor() -> PrincipalId {
     PrincipalId::local("tigd")
 }
 
-/// Extract the caller's claimed principal. Missing or empty header →
-/// the daemon's own ambient principal (`local:tigd`). This means "no
-/// auth" mode behaves as if every call were issued by the daemon itself
-/// — read everything tigd authored, mutate it freely. Opting *into* a
-/// different identity is the explicit act of sending the header.
-fn caller_from(headers: &HeaderMap) -> PrincipalId {
-    headers
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Resolve the caller's principal from request headers, with this
+/// precedence:
+///
+///   1. `Authorization: Bearer <token>` — verify the Ed25519
+///      signature against the principal's pubkey from the registry.
+///      Any failure (malformed, bad signature, expired, unknown
+///      subject) returns `401 Unauthorized` — we never silently
+///      fall through to a weaker mode when a token is *present*.
+///   2. `X-Tig-Principal: <name>` — trust-by-name fallback. Honored
+///      only when no Authorization header is set.
+///   3. Neither header → the daemon's ambient principal
+///      (`local:tigd`).
+fn caller_from(state: &AppState, headers: &HeaderMap) -> ApiResult<PrincipalId> {
+    if let Some(auth) = headers.get(AUTH_HEADER).and_then(|h| h.to_str().ok()) {
+        let token = auth
+            .strip_prefix("Bearer ")
+            .or_else(|| auth.strip_prefix("bearer "));
+        let Some(token) = token else {
+            return Err(ApiError::BadRequest(format!(
+                "{AUTH_HEADER} header must be `Bearer <token>`"
+            )));
+        };
+        // Peek the claims to find the right pubkey, then verify.
+        let claims = peek_claims(token)
+            .map_err(|e| ApiError::BadRequest(format!("malformed bearer token: {e}")))?;
+        let principal_store = PrincipalStore::open(state.repo.root())
+            .map_err(|e| ApiError::Internal(format!("principal store: {e}")))?;
+        let principal = principal_store
+            .get(&claims.sub)
+            .map_err(|_| ApiError::Unauthorized(format!("unknown principal: {}", claims.sub)))?;
+        let pubkey = principal.sign_pubkey().map_err(|_| {
+            ApiError::Unauthorized(format!(
+                "principal {:?} has no signing pubkey on file",
+                claims.sub
+            ))
+        })?;
+        let claims = verify_token(token, &pubkey, now_unix_seconds()).map_err(|e| {
+            // All verify failures collapse to 401; the body carries
+            // the specific reason for debugging.
+            ApiError::Unauthorized(format!("token rejected: {e}"))
+        })?;
+        return Ok(PrincipalId(claims.sub));
+    }
+
+    Ok(headers
         .get(PRINCIPAL_HEADER)
         .and_then(|h| h.to_str().ok())
         .filter(|s| !s.is_empty())
         .map(|s| PrincipalId(s.to_string()))
-        .unwrap_or_else(default_actor)
+        .unwrap_or_else(default_actor))
 }
 
 /// Look up a change and apply the read-visibility check in one step.
@@ -201,7 +252,7 @@ pub async fn list_changes(
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<ChangeView>>> {
     use tig_store::RefStore;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let mut out = Vec::new();
     for id in state.repo.refs().list_changes()? {
         let c = state.repo.get_change(&id)?;
@@ -219,7 +270,7 @@ pub async fn get_change(
     headers: HeaderMap,
 ) -> ApiResult<Json<ChangeView>> {
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_visible_change(&state, &id, &caller)?;
     Ok(Json(ChangeView::from_core(&change)))
 }
@@ -230,7 +281,7 @@ pub async fn create_change(
     Json(req): Json<CreateChangeReq>,
 ) -> ApiResult<(StatusCode, Json<ChangeView>)> {
     let _lock = state.repo.lock_for_write()?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
 
     // Determine the parent snapshot for the new change.
     let parent_snap = if let Some(from_str) = &req.from_change {
@@ -317,7 +368,7 @@ pub async fn get_tree_root(
     headers: HeaderMap,
 ) -> ApiResult<Json<TreeView>> {
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_visible_change(&state, &id, &caller)?;
     let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
     let tree = Tree::decode(&state.repo.get(&snap.tree)?).map_err(ApiError::from)?;
@@ -337,7 +388,7 @@ pub async fn get_tree_path(
     use tig_core::EntryKind;
 
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_visible_change(&state, &id, &caller)?;
     let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
@@ -394,7 +445,7 @@ pub async fn patch_tree_path(
 ) -> ApiResult<Json<ChangeView>> {
     let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_mutable_change(&state, &id, &caller)?;
     let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
@@ -421,7 +472,7 @@ pub async fn delete_tree_path(
 ) -> ApiResult<Json<ChangeView>> {
     let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_mutable_change(&state, &id, &caller)?;
     let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
@@ -451,7 +502,7 @@ pub async fn snap_change(
 ) -> ApiResult<Json<SnapResp>> {
     let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_mutable_change(&state, &id, &caller)?;
     let snap = Snapshot::decode(&state.repo.get(&change.current)?).map_err(ApiError::from)?;
 
@@ -503,7 +554,7 @@ pub async fn transition_change(
 ) -> ApiResult<Json<ChangeView>> {
     let _lock = state.repo.lock_for_write()?;
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let mut change = load_mutable_change(&state, &id, &caller)?;
     let before = change.clone();
 
@@ -555,7 +606,7 @@ pub async fn diff_change(
     headers: HeaderMap,
 ) -> ApiResult<Json<DiffView>> {
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_visible_change(&state, &id, &caller)?;
 
     // Resolve `to`: arg or change.current.
@@ -678,7 +729,7 @@ pub async fn blame_path(
     headers: HeaderMap,
 ) -> ApiResult<Json<BlameView>> {
     let id = parse_change_id(&id)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let change = load_visible_change(&state, &id, &caller)?;
 
     let at_hash = match &q.snap {
@@ -723,7 +774,7 @@ pub async fn get_snapshot(
     headers: HeaderMap,
 ) -> ApiResult<Json<SnapshotView>> {
     let h = parse_hash(&hash)?;
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
 
     // Reachability gate: the snapshot must be reachable from at least
     // one change visible to the caller. A leaked hash from a hidden
@@ -757,7 +808,7 @@ pub async fn list_oplog(
     Query(q): Query<OplogQuery>,
     headers: HeaderMap,
 ) -> ApiResult<Json<Vec<OpView>>> {
-    let caller = caller_from(&headers);
+    let caller = caller_from(&state, &headers)?;
     let log = state.log.lock().await;
     let mut ops = log.list()?;
     if let Some(limit) = q.limit {

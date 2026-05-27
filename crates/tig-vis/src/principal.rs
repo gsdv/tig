@@ -19,7 +19,9 @@
 //! be migrated, version-controlled (carefully — without secrets!), or
 //! shared via other channels.
 
-use crate::{Error, KeyPair, PublicKey, Result, SecretKey};
+use crate::{
+    Error, KeyPair, PublicKey, Result, SecretKey, SignKeyPair, SignPublicKey, SignSecretKey,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -44,6 +46,16 @@ pub struct Principal {
     /// principals you only know the pubkey for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret_hex: Option<String>,
+    /// Hex-encoded Ed25519 signing public key. Optional only for
+    /// legacy records written before signed-bearer-tokens shipped;
+    /// `tig identity new` populates this for every new identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_pubkey_hex: Option<String>,
+    /// Hex-encoded Ed25519 signing secret seed. Optional — same
+    /// rules as `secret_hex`: only present where the identity is
+    /// owned locally.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_secret_hex: Option<String>,
 }
 
 impl Principal {
@@ -55,6 +67,27 @@ impl Principal {
             kind,
             pubkey,
             secret_hex,
+            sign_pubkey_hex: None,
+            sign_secret_hex: None,
+        }
+    }
+
+    /// Build a local principal with both an X25519 (sealing) keypair
+    /// and an Ed25519 (signing) keypair. The path `tig identity new`
+    /// takes.
+    pub fn new_local_full(
+        id: impl Into<String>,
+        kind: PrincipalKind,
+        seal_kp: KeyPair,
+        sign_kp: SignKeyPair,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind,
+            pubkey: seal_kp.public.clone(),
+            secret_hex: Some(seal_kp.secret.to_hex()),
+            sign_pubkey_hex: Some(sign_kp.public.to_hex()),
+            sign_secret_hex: Some(sign_kp.secret.to_hex()),
         }
     }
 
@@ -64,6 +97,8 @@ impl Principal {
             kind,
             pubkey,
             secret_hex: None,
+            sign_pubkey_hex: None,
+            sign_secret_hex: None,
         }
     }
 
@@ -77,6 +112,28 @@ impl Principal {
             .as_deref()
             .ok_or_else(|| Error::SecretMissing(self.id.clone()))?;
         SecretKey::from_hex(s)
+    }
+
+    /// True iff the principal record carries an Ed25519 signing public
+    /// key — i.e., they're capable of being a bearer-token subject.
+    pub fn has_sign_pubkey(&self) -> bool {
+        self.sign_pubkey_hex.is_some()
+    }
+
+    pub fn sign_pubkey(&self) -> Result<SignPublicKey> {
+        let s = self
+            .sign_pubkey_hex
+            .as_deref()
+            .ok_or_else(|| Error::SecretMissing(format!("{} (no sign pubkey)", self.id)))?;
+        SignPublicKey::from_hex(s)
+    }
+
+    pub fn sign_secret(&self) -> Result<SignSecretKey> {
+        let s = self
+            .sign_secret_hex
+            .as_deref()
+            .ok_or_else(|| Error::SecretMissing(format!("{} (no sign secret)", self.id)))?;
+        SignSecretKey::from_hex(s)
     }
 }
 
@@ -259,6 +316,8 @@ mod tests {
                 kind: PrincipalKind::User,
                 pubkey: kp.public,
                 secret_hex: Some(kp.secret.to_hex()),
+                sign_pubkey_hex: None,
+                sign_secret_hex: None,
             };
             assert!(store.put(&p).is_err(), "should reject id: {bad:?}");
         }

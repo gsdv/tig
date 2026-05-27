@@ -22,7 +22,8 @@ use tig_store::{
     WorkspaceMarker, WorkspaceStore, DEFAULT_WORKTREE_DIR,
 };
 use tig_vis::{
-    seal as do_seal, unseal as do_unseal, KeyPair, Principal, PrincipalKind, PrincipalStore,
+    seal as do_seal, sign_token, unseal as do_unseal, Claims, KeyPair, Principal, PrincipalKind,
+    PrincipalStore, SignKeyPair,
 };
 
 #[derive(Parser)]
@@ -147,6 +148,20 @@ enum Cmd {
         force: bool,
     },
 
+    /// Mint a signed bearer token for the daemon. Print the token
+    /// string to stdout; pass it to the daemon as
+    /// `Authorization: Bearer <token>`.
+    AuthToken {
+        /// Identity to mint for. Must have an Ed25519 signing
+        /// secret in the local principal store. Falls back to
+        /// $TIG_AS.
+        #[arg(long, value_name = "NAME")]
+        r#as: Option<String>,
+        /// Token lifetime in seconds. Default 1 hour.
+        #[arg(long, default_value_t = 3600)]
+        ttl: u64,
+    },
+
     /// Per-line authorship attribution. Walks back through the
     /// snapshot history and assigns each line to the snap that last
     /// introduced or modified it.
@@ -264,6 +279,7 @@ fn run(cli: Cli) -> Result<()> {
         } => cmd_diff(range.as_deref(), no_hunks, &path),
         Cmd::Restore { snap_prefix, force } => cmd_restore(&snap_prefix, force),
         Cmd::Blame { path, snap } => cmd_blame(&path, snap.as_deref()),
+        Cmd::AuthToken { r#as, ttl } => cmd_auth_token(r#as.as_deref(), ttl),
         Cmd::Wt(WtCmd::Make { name, at }) => cmd_wt_make(&name, at.as_deref()),
         Cmd::Wt(WtCmd::List) => cmd_wt_list(),
         Cmd::Wt(WtCmd::Drop { name, keep_files }) => cmd_wt_drop(&name, keep_files),
@@ -1235,6 +1251,36 @@ fn entry_kind_label(k: tig_core::EntryKind) -> &'static str {
     }
 }
 
+// --- auth-token ----------------------------------------------------------
+
+fn cmd_auth_token(as_name: Option<&str>, ttl: u64) -> Result<()> {
+    let ws = discover_workspace()?;
+    let store = PrincipalStore::open(ws.repo.root())?;
+
+    let name = as_name
+        .map(String::from)
+        .or_else(|| std::env::var("TIG_AS").ok())
+        .ok_or_else(|| anyhow!("--as <name> required (or set TIG_AS)"))?;
+    let identity = store.get(&name)?;
+    let secret = identity
+        .sign_secret()
+        .map_err(|e| anyhow!("identity {name:?} has no signing secret: {e}"))?;
+
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_add(ttl);
+    let claims = Claims {
+        sub: name.clone(),
+        exp,
+    };
+    let token = sign_token(&claims, &secret)?;
+    println!("{token}");
+    eprintln!("  (sub: {name}, expires in {ttl}s)");
+    Ok(())
+}
+
 // --- blame ---------------------------------------------------------------
 
 fn cmd_blame(path: &str, snap_arg: Option<&str>) -> Result<()> {
@@ -1387,17 +1433,22 @@ fn cmd_restore(snap_prefix: &str, force: bool) -> Result<()> {
 fn cmd_identity_new(name: &str) -> Result<()> {
     let ws = discover_workspace()?;
     let store = PrincipalStore::open(ws.repo.root())?;
-    let kp = KeyPair::generate();
-    let pubkey_hex = kp.public.to_hex();
-    let p = Principal::new_local(name, PrincipalKind::User, kp);
+    // Generate both keypairs: X25519 (for sealing) and Ed25519 (for
+    // signing bearer tokens). Stored together in the principal record.
+    let seal_kp = KeyPair::generate();
+    let sign_kp = SignKeyPair::generate();
+    let seal_pub_hex = seal_kp.public.to_hex();
+    let sign_pub_hex = sign_kp.public.to_hex();
+    let p = Principal::new_local_full(name, PrincipalKind::User, seal_kp, sign_kp);
     store.put_new(&p)?;
     println!("created identity {name}");
-    println!("  pubkey: {pubkey_hex}");
+    println!("  seal pubkey: {seal_pub_hex}");
+    println!("  sign pubkey: {sign_pub_hex}");
     println!(
-        "  secret stored at {}/vis/keys/{name}.json",
+        "  secrets stored at {}/vis/keys/{name}.json",
         ws.repo.root().display()
     );
-    println!("  (the secret never leaves this machine.)");
+    println!("  (secrets never leave this machine; mint tokens with `tig auth-token`.)");
     Ok(())
 }
 
