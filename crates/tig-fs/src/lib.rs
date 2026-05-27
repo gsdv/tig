@@ -11,6 +11,7 @@
 //!   - `workspace` — multi-checkout management (§6)
 
 pub mod clone;
+pub mod diff;
 pub mod error;
 pub mod materialize;
 pub mod restore;
@@ -22,6 +23,9 @@ pub mod watch;
 pub use clone::{detect as detect_clone_engine, AutoClone, CloneEngine, CopyFallback};
 #[cfg(target_os = "macos")]
 pub use clone::ApfsClone;
+pub use diff::{
+    blob_diff_hunks, diff_trees, is_binary, ChangeKind, DiffOptions, FileDiff, Hunk, HunkLine,
+};
 pub use error::Error;
 pub use materialize::{
     collect_sealed_paths, materialize_change_into, materialize_from_workspace,

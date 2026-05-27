@@ -290,6 +290,72 @@ impl RecipientView {
     }
 }
 
+// --- diff (wire shape) ---------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DiffView {
+    pub from: String, // hex tree hash
+    pub to: String,   // hex tree hash
+    pub files: Vec<FileDiffView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FileDiffView {
+    pub path: String,
+    pub kind: String, // "Added" | "Removed" | "Modified" | "TypeChanged"
+    /// For `TypeChanged`, the previous entry kind. Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_changed_from: String,
+    /// For `TypeChanged`, the new entry kind. Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_changed_to: String,
+    pub entry_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_target: Option<String>,
+    pub binary: bool,
+    /// Omitted for trees, symlinks, sealed entries, and binaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hunks: Option<Vec<HunkView>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HunkView {
+    pub from_start: usize,
+    pub from_len: usize,
+    pub to_start: usize,
+    pub to_len: usize,
+    pub lines: Vec<HunkLineView>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "tag", content = "text")]
+pub enum HunkLineView {
+    Context(String),
+    Add(String),
+    Remove(String),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct DiffQuery {
+    /// Hex hash of the "from" snapshot. If omitted, the daemon uses the
+    /// change's current snapshot's parent. If the current snapshot has
+    /// no parent, the diff is against the empty tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Hex hash of the "to" snapshot. If omitted, the daemon uses the
+    /// change's current snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// If true, omit unified-diff hunks (file list only).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_hunks: bool,
+    /// Path-prefix filters; empty = no filter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+}
+
 // --- error envelope ------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -21,12 +21,14 @@ use tig_core::{
     Sealed, Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    delete_at_path, list_tree, lookup_entry, read_blob_at_path, snap_change_directly,
-    write_blob_at_path, SnapOptions, SnapOutcome,
+    delete_at_path, diff_trees, list_tree, lookup_entry, read_blob_at_path,
+    snap_change_directly, write_blob_at_path, ChangeKind as FsChangeKind, DiffOptions,
+    FileDiff, Hunk, HunkLine, SnapOptions, SnapOutcome,
 };
 use tig_protocol::{
-    ChangeView, CreateChangeReq, ErrorResp, HealthView, OpView, SealedView, SnapReq, SnapResp,
-    SnapshotView, TransitionReq, TreeView, UndoReq, UndoResp,
+    ChangeView, CreateChangeReq, DiffQuery, DiffView, ErrorResp, FileDiffView, HealthView,
+    HunkLineView, HunkView, OpView, SealedView, SnapReq, SnapResp, SnapshotView,
+    TransitionReq, TreeView, UndoReq, UndoResp,
 };
 use tig_store::{
     undo_once, OpInProgress, OpKind, RefSnapshot,
@@ -477,6 +479,130 @@ pub async fn transition_change(
     })?;
 
     Ok(Json(ChangeView::from_core(&change)))
+}
+
+// --- diff ----------------------------------------------------------------
+
+/// `GET /v1/changes/{id}/diff?from=<hash>&to=<hash>&no_hunks=<bool>&paths=...`
+///
+/// Defaults: `to` = change.current; `from` = the parent of the `to`
+/// snapshot (empty tree if `to` has no parents). Visibility-gated:
+/// callers must be able to see the change. The `from` and `to`
+/// snapshots additionally must be reachable from at least one visible
+/// change — same gate as the raw snapshot fetch.
+pub async fn diff_change(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Query(q): Query<DiffQuery>,
+    headers: HeaderMap,
+) -> ApiResult<Json<DiffView>> {
+    let id = parse_change_id(&id)?;
+    let caller = caller_from(&headers);
+    let change = load_visible_change(&state, &id, &caller)?;
+
+    // Resolve `to`: arg or change.current.
+    let to_snap_hash = match &q.to {
+        Some(s) => parse_hash(s)?,
+        None => change.current,
+    };
+    let to_snap = Snapshot::decode(&state.repo.get(&to_snap_hash)?)
+        .map_err(ApiError::from)?;
+
+    // Resolve `from`: arg → parent of `to` → empty tree.
+    let from_tree = match &q.from {
+        Some(s) => {
+            let h = parse_hash(s)?;
+            let snap = Snapshot::decode(&state.repo.get(&h)?).map_err(ApiError::from)?;
+            snap.tree
+        }
+        None => match to_snap.parents.first() {
+            Some(parent_hash) => {
+                let parent =
+                    Snapshot::decode(&state.repo.get(parent_hash)?).map_err(ApiError::from)?;
+                parent.tree
+            }
+            None => state
+                .repo
+                .put(&Tree::new().encode().map_err(ApiError::from)?)?,
+        },
+    };
+
+    // Reachability: both endpoints must be reachable from a visible
+    // change. If a caller could diff any tree by hash, draft contents
+    // would leak through this endpoint.
+    let visible = visible_snapshot_set(&state, &caller)?;
+    let to_reachable = visible.contains(&to_snap_hash);
+    // The `from` arg is a snapshot if provided, but we resolved it to
+    // a tree hash. Re-check the original snapshot if it was supplied.
+    let from_snap_visible = match &q.from {
+        Some(s) => {
+            let h = parse_hash(s)?;
+            visible.contains(&h)
+        }
+        None => true, // implicit parent of a visible `to` is fine
+    };
+    if !to_reachable || !from_snap_visible {
+        return Err(ApiError::NotFound(format!("change {}", id.0)));
+    }
+
+    let opts = DiffOptions {
+        no_hunks: q.no_hunks,
+        paths: q.paths.clone(),
+        context_lines: 3,
+    };
+    let diffs = diff_trees(&state.repo, &from_tree, &to_snap.tree, &opts)?;
+
+    let view = DiffView {
+        from: from_tree.to_hex(),
+        to: to_snap.tree.to_hex(),
+        files: diffs.iter().map(file_diff_view).collect(),
+    };
+    Ok(Json(view))
+}
+
+fn file_diff_view(d: &FileDiff) -> FileDiffView {
+    let (kind_name, type_changed_from, type_changed_to) = match &d.kind {
+        FsChangeKind::Added => ("Added".to_string(), String::new(), String::new()),
+        FsChangeKind::Removed => ("Removed".to_string(), String::new(), String::new()),
+        FsChangeKind::Modified => ("Modified".to_string(), String::new(), String::new()),
+        FsChangeKind::TypeChanged { from, to } => (
+            "TypeChanged".to_string(),
+            format!("{from:?}"),
+            format!("{to:?}"),
+        ),
+    };
+    FileDiffView {
+        path: d.path.clone(),
+        kind: kind_name,
+        type_changed_from,
+        type_changed_to,
+        entry_kind: format!("{:?}", d.entry_kind),
+        from_target: d.from_target.map(|h| h.to_hex()),
+        to_target: d.to_target.map(|h| h.to_hex()),
+        binary: d.binary,
+        hunks: d
+            .hunks
+            .as_ref()
+            .map(|hs| hs.iter().map(hunk_view).collect()),
+    }
+}
+
+fn hunk_view(h: &Hunk) -> HunkView {
+    HunkView {
+        from_start: h.from_start,
+        from_len: h.from_len,
+        to_start: h.to_start,
+        to_len: h.to_len,
+        lines: h
+            .lines
+            .iter()
+            .map(|l| match l {
+                HunkLine::Context(s) => HunkLineView::Context(s.clone()),
+                HunkLine::Add(s) => HunkLineView::Add(s.clone()),
+                HunkLine::Remove(s) => HunkLineView::Remove(s.clone()),
+            })
+            .collect(),
+    }
 }
 
 // --- snapshots -----------------------------------------------------------

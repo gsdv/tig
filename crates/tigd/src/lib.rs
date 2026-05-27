@@ -63,6 +63,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
                 .delete(handlers::delete_tree_path),
         )
         .route("/v1/changes/{id}/snap", post(handlers::snap_change))
+        .route("/v1/changes/{id}/diff", get(handlers::diff_change))
         .route(
             "/v1/changes/{id}/transition",
             post(handlers::transition_change),

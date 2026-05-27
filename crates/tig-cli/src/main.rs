@@ -11,9 +11,11 @@ use tig_core::{
     Blob, Change, ChangeState, Encodable, ObjectKind, PrincipalId, Snapshot, Tree, VisLabel,
 };
 use tig_fs::{
-    detect_clone_engine, lookup_entry, materialize_change_into, materialize_from_workspace,
-    restore_tree_into, snap_change_directly, snap_now, watch_and_snap, write_sealed_at_path,
-    MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent, WatchOptions,
+    detect_clone_engine, diff_trees, lookup_entry, materialize_change_into,
+    materialize_from_workspace, restore_tree_into, snap_change_directly, snap_now,
+    watch_and_snap, write_sealed_at_path, ChangeKind as FsChangeKind, DiffOptions, FileDiff,
+    HunkLine, MaterializeOutcome, RestoreOptions, SnapOptions, SnapOutcome, WatchEvent,
+    WatchOptions,
 };
 use tig_store::{
     undo_once, workspace_ref_snapshot, write_marker, OpInProgress, OpKind, OpLog, RefStore,
@@ -102,6 +104,23 @@ enum Cmd {
     /// anyone but you until you `tig change publish` it. The "hidden
     /// in-flight PR" from Theo's §1.
     Draft { description: String },
+
+    /// Show changes between two snapshots, in unified-diff format.
+    ///
+    /// RANGE forms:
+    ///   tig diff                 (parent of current snap → current)
+    ///   tig diff <prefix>        (parent of <prefix> → <prefix>)
+    ///   tig diff <from>..<to>    (explicit range)
+    Diff {
+        #[arg(value_name = "RANGE")]
+        range: Option<String>,
+        /// Skip hunks; print file list only.
+        #[arg(long)]
+        no_hunks: bool,
+        /// Path-prefix filter, comma-separated. Empty = no filter.
+        #[arg(long, value_delimiter = ',')]
+        path: Vec<String>,
+    },
 
     /// Bring the working directory's contents back into alignment with
     /// a chosen snapshot. The current change advances with a new
@@ -218,6 +237,7 @@ fn run(cli: Cli) -> Result<()> {
             cmd_change_transition(id.as_deref(), Some("working"), Some("public"))
         }
         Cmd::Draft { description } => cmd_draft(&description),
+        Cmd::Diff { range, no_hunks, path } => cmd_diff(range.as_deref(), no_hunks, &path),
         Cmd::Restore { snap_prefix, force } => cmd_restore(&snap_prefix, force),
         Cmd::Wt(WtCmd::Make { name, at }) => cmd_wt_make(&name, at.as_deref()),
         Cmd::Wt(WtCmd::List) => cmd_wt_list(),
@@ -877,6 +897,185 @@ fn cmd_change_transition(
         change.visibility.name()
     );
     Ok(())
+}
+
+// --- diff ----------------------------------------------------------------
+
+/// Resolve the (from_snap, to_snap) pair from a range argument. Forms:
+///   None             → (parent of HEAD's current, HEAD's current)
+///   Some("abc")      → (parent of abc, abc)
+///   Some("a..b")     → (a, b)
+fn resolve_diff_range(
+    ws: &Workspace,
+    range: Option<&str>,
+) -> Result<(tig_core::Hash, tig_core::Hash)> {
+    let to = match range {
+        Some(r) if r.contains("..") => {
+            let (l, r) = r.split_once("..").unwrap();
+            if l.is_empty() || r.is_empty() {
+                return Err(anyhow!(
+                    "range {:?} needs prefixes on both sides of `..`", r
+                ));
+            }
+            let from = ws.repo.resolve_hash_prefix(l)?;
+            let to = ws.repo.resolve_hash_prefix(r)?;
+            return Ok((from, to));
+        }
+        Some(r) => ws.repo.resolve_hash_prefix(r)?,
+        None => {
+            let id = ws
+                .current_change_id()?
+                .ok_or_else(|| anyhow!("no current change to diff"))?;
+            ws.repo.get_change(&id)?.current
+        }
+    };
+
+    // `to` is set. Derive `from` = parent of `to`.
+    let to_snap = Snapshot::decode(&ws.repo.get(&to)?)?;
+    let from = match to_snap.parents.first() {
+        Some(p) => {
+            // The parent is a Snapshot; we use its *tree* downstream,
+            // but the diff engine takes tree hashes. Return the parent
+            // snapshot hash; the caller decodes to extract the tree.
+            *p
+        }
+        None => {
+            // Root snapshot: synth an empty-tree snap to subtract from.
+            // We don't need a snapshot, just an empty tree hash. Encode
+            // it directly — content-addressed dedup means we won't
+            // create a duplicate.
+            let empty_tree = ws.repo.put(&Tree::new().encode()?)?;
+            let synth = Snapshot {
+                parents: vec![],
+                tree: empty_tree,
+                author: principal(),
+                timestamp_ns: 0,
+                message: Some("(empty)".into()),
+                op_id: None,
+            };
+            ws.repo.put(&synth.encode()?)?
+        }
+    };
+    Ok((from, to))
+}
+
+fn cmd_diff(range: Option<&str>, no_hunks: bool, paths: &[String]) -> Result<()> {
+    let ws = discover_workspace()?;
+    let (from_snap_hash, to_snap_hash) = resolve_diff_range(&ws, range)?;
+
+    // Both endpoints should be snapshots — validate the kind to give a
+    // clearer error than the decode failure.
+    for (label, h) in [("from", &from_snap_hash), ("to", &to_snap_hash)] {
+        let raw = ws.repo.get(h)?;
+        if raw.kind != ObjectKind::Snapshot {
+            return Err(anyhow!(
+                "{label} hash {} is a {}, not a snapshot",
+                &h.to_hex()[..12],
+                raw.kind.name()
+            ));
+        }
+    }
+
+    let from = Snapshot::decode(&ws.repo.get(&from_snap_hash)?)?;
+    let to = Snapshot::decode(&ws.repo.get(&to_snap_hash)?)?;
+
+    let opts = DiffOptions {
+        no_hunks,
+        paths: paths.to_vec(),
+        context_lines: 3,
+    };
+    let diffs = diff_trees(&ws.repo, &from.tree, &to.tree, &opts)?;
+
+    if diffs.is_empty() {
+        println!(
+            "(no differences between {} and {})",
+            &from_snap_hash.to_hex()[..12],
+            &to_snap_hash.to_hex()[..12]
+        );
+        return Ok(());
+    }
+
+    for fd in &diffs {
+        print_file_diff(fd);
+    }
+    Ok(())
+}
+
+fn print_file_diff(fd: &FileDiff) {
+    println!("diff --tig a/{0} b/{0}", fd.path);
+    match &fd.kind {
+        FsChangeKind::TypeChanged { from, to } => {
+            println!("type changed: {from:?} -> {to:?}");
+            return;
+        }
+        FsChangeKind::Added => println!("new {} mode", entry_kind_label(fd.entry_kind)),
+        FsChangeKind::Removed => println!("removed {}", entry_kind_label(fd.entry_kind)),
+        FsChangeKind::Modified => {}
+    }
+
+    // For non-File kinds, we don't emit hunks (no text to render).
+    if fd.entry_kind != tig_core::EntryKind::File {
+        let from = fd
+            .from_target
+            .map(|h| h.to_hex()[..12].to_string())
+            .unwrap_or_default();
+        let to = fd
+            .to_target
+            .map(|h| h.to_hex()[..12].to_string())
+            .unwrap_or_default();
+        if !from.is_empty() && !to.is_empty() {
+            println!("  {from} -> {to}");
+        }
+        return;
+    }
+
+    if fd.binary {
+        println!("Binary files a/{0} and b/{0} differ", fd.path);
+        return;
+    }
+
+    let (left_path, right_path) = match fd.kind {
+        FsChangeKind::Added => ("/dev/null".to_string(), format!("b/{}", fd.path)),
+        FsChangeKind::Removed => (format!("a/{}", fd.path), "/dev/null".to_string()),
+        _ => (format!("a/{}", fd.path), format!("b/{}", fd.path)),
+    };
+    println!("--- {left_path}");
+    println!("+++ {right_path}");
+
+    if let Some(hunks) = &fd.hunks {
+        for h in hunks {
+            // git's convention: omit ",N" when N is 1.
+            let from_range = if h.from_len == 1 {
+                format!("{}", h.from_start)
+            } else {
+                format!("{},{}", h.from_start, h.from_len)
+            };
+            let to_range = if h.to_len == 1 {
+                format!("{}", h.to_start)
+            } else {
+                format!("{},{}", h.to_start, h.to_len)
+            };
+            println!("@@ -{from_range} +{to_range} @@");
+            for line in &h.lines {
+                match line {
+                    HunkLine::Context(s) => println!(" {s}"),
+                    HunkLine::Add(s) => println!("+{s}"),
+                    HunkLine::Remove(s) => println!("-{s}"),
+                }
+            }
+        }
+    }
+}
+
+fn entry_kind_label(k: tig_core::EntryKind) -> &'static str {
+    match k {
+        tig_core::EntryKind::File => "file",
+        tig_core::EntryKind::Tree => "directory",
+        tig_core::EntryKind::Symlink => "symlink",
+        tig_core::EntryKind::Sealed => "sealed entry",
+        tig_core::EntryKind::Conflict => "conflict marker",
+        tig_core::EntryKind::Submodule => "submodule",
+    }
 }
 
 // --- restore -------------------------------------------------------------
